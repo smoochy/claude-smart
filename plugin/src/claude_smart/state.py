@@ -34,6 +34,8 @@ _DEFAULT_STATE_DIR = Path.home() / ".claude-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
 
+_VALID_CITATION_KINDS = frozenset({"playbook", "profile"})
+
 
 def _truncate_tool_data_field(value: Any) -> Any:
     """Truncate a single tool_data field value to ``_TOOL_DATA_FIELD_MAX_LEN``.
@@ -166,6 +168,50 @@ def read_all(session_id: str) -> list[dict[str, Any]]:
     return records
 
 
+def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
+    """Map local ``cited_items`` to the wire ``Citation`` shape.
+
+    Local entries (from ``events.stop._resolve_cited_items``) carry
+    ``{id, kind, title, real_id}``; reflexio's ``InteractionData.citations``
+    wants ``{kind, real_id, tag, title}`` where ``tag`` is the rank id
+    (``r1-301``-style) we already keep under ``id``. Entries without a
+    ``real_id`` (unresolved injections) are dropped — the server can't
+    join them back to a stored row.
+
+    Args:
+        cited_items (Any): The list-of-dicts blob attached to an Assistant
+            turn record, or ``None`` when the turn cited nothing.
+
+    Returns:
+        list[dict[str, str]]: Citation dicts ready to be folded into an
+            ``InteractionData`` payload. Empty when ``cited_items`` is
+            missing, malformed, or contains nothing resolvable.
+    """
+    if not isinstance(cited_items, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in cited_items:
+        if not isinstance(item, dict):
+            continue
+        real_id = item.get("real_id")
+        kind = item.get("kind")
+        if not isinstance(real_id, str) or not real_id:
+            continue
+        if kind not in _VALID_CITATION_KINDS:
+            continue
+        tag = item.get("id")
+        title = item.get("title")
+        out.append(
+            {
+                "kind": kind,
+                "real_id": real_id,
+                "tag": tag if isinstance(tag, str) else "",
+                "title": title if isinstance(title, str) else "",
+            }
+        )
+    return out
+
+
 def unpublished_slice(
     records: Iterable[dict[str, Any]],
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -212,14 +258,19 @@ def unpublished_slice(
             pending_tools.append(tool_entry)
             continue
         if role in {"User", "Assistant"}:
-            # ``cited_items`` is local-only metadata for the dashboard's
-            # "used" badge; reflexio's InteractionData has no slot for it.
+            # ``cited_items`` is local-only metadata (dashboard "used" badge);
+            # map it onto the wire's ``citations`` field — reflexio uses those
+            # to drive playbook/profile reflection in the publish flow.
             turn = {
                 k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
             }
             turn["role"] = role
-            if role == "Assistant" and pending_tools:
-                turn["tools_used"] = pending_tools
-                pending_tools = []
+            if role == "Assistant":
+                citations = _to_wire_citations(rec.get("cited_items"))
+                if citations:
+                    turn["citations"] = citations
+                if pending_tools:
+                    turn["tools_used"] = pending_tools
+                    pending_tools = []
             turns.append(turn)
     return published, turns
