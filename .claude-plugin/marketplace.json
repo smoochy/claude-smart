@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-smart",
-      "version": "0.1.18",
+      "version": "0.1.19",
       "source": "./plugin",
       "description": "Learns user corrections and project playbooks via reflexio — uses Claude Code itself as the LLM backend (no external API key required)"
     }
