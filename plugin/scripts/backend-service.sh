@@ -54,17 +54,10 @@ mkdir -p "$STATE_DIR"
 
 emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
 
-# Kill a process group started via setsid. Same pattern as
-# dashboard-service.sh: SIGTERM, short grace, SIGKILL. Silent on failure.
+# Tree-kill the recorded process. Delegates to claude_smart_kill_tree
+# (POSIX: signal the process group; Windows: taskkill /T /F /PID).
 kill_group() {
-  pgid="$1"
-  [ -z "$pgid" ] && return 0
-  kill -TERM -- "-$pgid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
-    kill -0 -- "-$pgid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL -- "-$pgid" 2>/dev/null || true
+  claude_smart_kill_tree "$1"
 }
 
 # True if /health returns 200. Reflexio's /health is a plain GET with no
@@ -165,31 +158,22 @@ case "$CMD" in
     export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
     export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
 
-    # --no-reload: uvicorn's reloader forks a supervisor; makes PGID
+    # --no-reload: uvicorn's reloader forks a supervisor; makes
     # bookkeeping harder and we don't need hot-reload for a user-facing
-    # service. Same detach pattern as dashboard-service.sh.
-    if command -v setsid >/dev/null 2>&1; then
-      setsid nohup uv run --project "$PLUGIN_ROOT" --quiet \
-        reflexio services start --only backend --no-reload \
-        >>"$LOG_FILE" 2>&1 < /dev/null &
-      echo $! > "$PID_FILE"
-    elif command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-        uv run --project "$PLUGIN_ROOT" --quiet \
-        reflexio services start --only backend --no-reload \
-        >>"$LOG_FILE" 2>&1 < /dev/null &
-      echo $! > "$PID_FILE"
-    else
-      nohup uv run --project "$PLUGIN_ROOT" --quiet \
-        reflexio services start --only backend --no-reload \
-        >>"$LOG_FILE" 2>&1 < /dev/null &
-      svc_pid=$!
-      actual_pgid=""
-      if command -v ps >/dev/null 2>&1; then
-        actual_pgid=$(ps -o pgid= -p "$svc_pid" 2>/dev/null | tr -d ' ')
-      fi
-      echo "${actual_pgid:-$svc_pid}" > "$PID_FILE"
-    fi
+    # service. Detach via claude_smart_spawn_detached so the same code
+    # path covers Linux (setsid), macOS (python3 os.setsid), and Windows
+    # (nohup; no process groups). Caller-side stdout/stderr redirection
+    # works across all three primitives — Git Bash routes the > and 2>&1
+    # through to the underlying CRT before nohup execs the child.
+    claude_smart_spawn_detached uv run --project "$PLUGIN_ROOT" --quiet \
+      reflexio services start --only backend --no-reload \
+      >>"$LOG_FILE" 2>&1
+    svc_pid=$!
+    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
+    # setsid/python os.setsid make this pid the new process group leader;
+    # sampling immediately can race and capture the caller's pgid instead.
+    # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
+    echo "$svc_pid" > "$PID_FILE"
 
     # Give uvicorn up to ~10s to answer /health. The very first boot
     # after a fresh checkout may be slower (LiteLLM import, chromadb
