@@ -14,7 +14,7 @@
 #   - git (for the release flow)
 
 .PHONY: help bump release publish publish-npm publish-pypi publish-dry \
-        check-version check-clean ensure-remote-reflexio unskip-worktree
+        check-version check-clean check-npm-auth ensure-remote-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json \
@@ -35,6 +35,16 @@ endif
 check-clean:
 	@git diff --quiet && git diff --cached --quiet \
 	  || { echo "error: working tree is dirty — commit or stash first" >&2; exit 1; }
+
+check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
+	@if [ -n "$$NPM_TOKEN" ]; then \
+	  echo "→ npm: NPM_TOKEN is set"; \
+	elif npm whoami >/dev/null 2>&1; then \
+	  echo "→ npm: logged in as $$(npm whoami)"; \
+	else \
+	  echo "error: not authenticated via npm whoami and NPM_TOKEN is not set; set NPM_TOKEN for CI or run npm login locally" >&2; \
+	  exit 1; \
+	fi
 
 unskip-worktree: ## Clear skip-worktree on plugin/pyproject.toml and plugin/uv.lock so release edits land in git
 	@echo "→ clearing skip-worktree on $(PYPROJECT) $(LOCK_FILES)"
@@ -87,7 +97,7 @@ publish-dry: unskip-worktree ensure-remote-reflexio ## Show what would be publis
 
 publish: publish-npm publish-pypi ## Publish to both npm and PyPI
 
-release: check-version check-clean bump ## Bump + commit + tag + publish + push
+release: check-version check-clean check-npm-auth bump ## Bump + commit + tag + publish + push
 	@echo "→ committing release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"
