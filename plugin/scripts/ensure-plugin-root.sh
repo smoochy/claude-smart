@@ -50,6 +50,28 @@ if [ "$FOLLOW" = "1" ]; then
     exit 0
 fi
 
+# Cache-tracking: if the link currently resolves to a path under the
+# managed plugin cache (~/.claude/plugins/cache/), always retarget it to
+# $TARGET. Plugin updates leave old version directories behind, so a
+# valid pyproject.toml at the stale target is not proof the link is
+# fresh. Links pointing outside the cache (e.g., a user's local-dev
+# checkout) are left alone here and handled by the self-heal below.
+if [ -L "$LINK" ]; then
+    # Literal target string, not realpath: we compare against what was written by ln -s.
+    CURRENT="$(readlink "$LINK" 2>/dev/null || true)"
+    case "$CURRENT" in
+        "$HOME/.claude/plugins/cache/"*)
+            CURRENT_NORM="${CURRENT%/}"
+            TARGET_NORM="${TARGET%/}"
+            if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then
+                ln -sfn "$TARGET" "$LINK"
+                echo "[claude-smart] plugin-root → $TARGET (cache-tracking, was $CURRENT)" >&2
+            fi
+            exit 0
+            ;;
+    esac
+fi
+
 # Self-heal path: only rewrite the link if it's missing or its target is
 # gone/invalid. This preserves a valid local-dev symlink set earlier by
 # setup-local-dev.sh, so SessionStart hooks on the local install don't
