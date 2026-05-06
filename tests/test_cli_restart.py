@@ -100,7 +100,11 @@ def test_restart_starts_backend_even_when_dashboard_build_fails(
     def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):
         argv = [str(c) for c in cmd]
         if argv[0] == "npm":
-            raise subprocess.CalledProcessError(2, argv)
+            # Only the build step fails — install must succeed so we exercise
+            # the build-failure recovery path, not the install-failure one.
+            if argv[1:3] == ["run", "build"]:
+                raise subprocess.CalledProcessError(2, argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
         name = argv[0].rsplit("/", 1)[-1]
         service_calls.append((name, argv[1]))
         if capture_output:

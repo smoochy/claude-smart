@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Run the unit test suite before allowing a commit.
+# Bypass with `git commit --no-verify` if you need to.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "→ pre-commit: running pytest"
+uv run --project plugin pytest tests/

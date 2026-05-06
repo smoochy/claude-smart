@@ -32,7 +32,7 @@ class _FakeClient:
     def search_user_playbooks(self, **_kw):
         return self._playbook_resp
 
-    def search_profiles(self, **_kw):
+    def search_user_profiles(self, **_kw):
         return self._profile_resp
 
 
@@ -125,7 +125,7 @@ class _RecordingClient:
         self.playbook_kwargs = kwargs
         return self._playbook_resp
 
-    def search_profiles(self, **kwargs):
+    def search_user_profiles(self, **kwargs):
         self.profile_kwargs = kwargs
         return self._profile_resp
 
@@ -195,7 +195,7 @@ def test_search_both_absorbs_one_leg_failure() -> None:
         def search_user_playbooks(self, **_kw):
             raise RuntimeError("playbook search down")
 
-        def search_profiles(self, **_kw):
+        def search_user_profiles(self, **_kw):
             return SimpleNamespace(user_profiles=[{"content": "p"}])
 
     a = _adapter_with(HalfBroken())
