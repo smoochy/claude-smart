@@ -29,7 +29,7 @@ from claude_smart.reflexio_adapter import Adapter  # noqa: E402
 
 def wait_for_extraction(
     *, project_dir: Path, session_id: str, timeout_s: float = 60.0
-) -> bool:
+) -> bool:  # pyright: ignore[reportUnusedParameter]
     """Poll reflexio until extraction produces at least one record.
 
     Reflexio's ``publish_interaction`` is fire-and-forget in production
@@ -39,23 +39,30 @@ def wait_for_extraction(
 
     Args:
         project_dir (Path): Scenario project / reflexio agent_version.
-        session_id (str): Reflexio user_id and session_id.
+        session_id (str): Reflexio user_id and session_id (kept for symmetry
+            with the claude-mem adapter; no longer consumed by ``fetch_both``).
         timeout_s (float): Max wait budget before giving up.
 
     Returns:
         bool: True once any profile or playbook has materialized, False on
             timeout. Callers still run their scored query either way.
     """
+    _ = session_id
     deadline = time.monotonic() + timeout_s
     adapter = Adapter()
+    target = str(project_dir)
     while time.monotonic() < deadline:
+        # Profiles are project-scoped via fetch_project_profiles; playbooks
+        # are global, so we filter post-hoc by agent_version. Either signal
+        # is enough to confirm THIS scenario's extraction has produced
+        # something.
         playbooks, profiles = adapter.fetch_both(
-            project_id=str(project_dir),
-            session_id=session_id,
-            playbook_top_k=1,
+            project_id=target,
+            playbook_top_k=50,
             profile_top_k=1,
         )
-        if playbooks or profiles:
+        scoped_playbooks = [p for p in playbooks if _get(p, "agent_version") == target]
+        if scoped_playbooks or profiles:
             return True
         time.sleep(1.0)
     _LOGGER.warning(
@@ -120,11 +127,19 @@ def retrieve(
     Returns:
         list[str]: Rendered memory lines, playbooks first then profiles.
     """
+    _ = session_id
     adapter = Adapter()
+    # Pull more than top_k because playbooks are stored user-global (scoped
+    # only by agent_version, not project_id). We scope post-hoc to the
+    # scenario so contamination from the user's real claude-smart history
+    # doesn't dominate retrieval.
     playbooks, profiles = adapter.search_both(
         project_id=str(project_dir),
-        session_id=session_id,
         query=probe_query,
-        top_k=top_k,
+        top_k=max(top_k * 6, 30),
     )
-    return _render(playbooks, "playbook") + _render(profiles, "profile")
+    target = str(project_dir)
+    scoped_playbooks = [p for p in playbooks if _get(p, "agent_version") == target][
+        :top_k
+    ]
+    return _render(scoped_playbooks, "playbook") + _render(profiles, "profile")

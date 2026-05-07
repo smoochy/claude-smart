@@ -38,7 +38,7 @@ from claude_smart.reflexio_adapter import Adapter  # noqa: E402
 
 _LOGGER = logging.getLogger(__name__)
 SCRATCH_ROOT = Path("/tmp/membench")
-_MEM_PLUGIN_DIR = Path.home() / ".claude/plugins/cache/thedotmack/claude-mem/12.3.8"
+_MEM_PLUGIN_DIR = Path.home() / ".claude/plugins/marketplaces/thedotmack/plugin"
 _MEM_WORKER_CJS = _MEM_PLUGIN_DIR / "scripts/worker-service.cjs"
 _MEM_BUN_RUNNER = _MEM_PLUGIN_DIR / "scripts/bun-runner.js"
 
@@ -92,7 +92,12 @@ def _build_assistant_replies(turns: tuple[str, ...]) -> list[str]:
     Returns:
         list[str]: One reply per user turn (same length as ``turns``).
     """
-    return [f"Acknowledged. I'll follow what you said: {turn[:140]}" for turn in turns]
+    # Keep replies short and content-free so the extractor doesn't treat
+    # them as evidence of agent behavior. Earlier templates that quoted the
+    # user turn verbatim caused claude-smart's playbook extractor to
+    # generate meta-playbooks about "the agent echoes user input" instead
+    # of capturing the user's stated rule.
+    return ["Got it." for _ in turns]
 
 
 def _inject_claude_smart(
@@ -114,22 +119,21 @@ def _inject_claude_smart(
         interactions.append({"role": "User", "content": user_turn})
         interactions.append({"role": "Assistant", "content": assistant_reply})
 
-    client = Adapter()._get_client()
-    if client is None:
-        return False, "reflexio client unavailable"
-    try:
-        # Non-blocking publish — matches production Adapter.publish() behavior.
-        # The benchmark waits for extraction separately via wait_for_smart_extraction().
-        client.publish_interaction(
-            user_id=session_id,
-            interactions=interactions,
-            agent_version=str(project_dir),
-            session_id=session_id,
-            wait_for_response=False,
-            force_extraction=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"publish_interaction: {exc}"
+    adapter = Adapter()
+    # Use production publish() so user_id == project_id == agent_version.
+    # An earlier version of this harness passed user_id=session_id directly
+    # to the underlying client, which stored profiles under a different key
+    # than the one search_profiles(project_id=...) reads — making every
+    # captured profile invisible to retrieval. Going through the adapter
+    # mirrors the production hook's wiring exactly.
+    ok = adapter.publish(
+        session_id=session_id,
+        project_id=str(project_dir),
+        interactions=interactions,
+        force_extraction=True,
+    )
+    if not ok:
+        return False, "Adapter.publish failed"
     return True, None
 
 
@@ -184,7 +188,7 @@ def _write_fake_transcript(
 
 
 def _run_mem_hook(
-    *, event: str, payload: dict, timeout_s: int = 30
+    *, event: str, payload: dict, timeout_s: int = 120
 ) -> tuple[bool, str | None]:
     """Pipe a hook payload into ``worker-service.cjs hook claude-code <event>``.
 

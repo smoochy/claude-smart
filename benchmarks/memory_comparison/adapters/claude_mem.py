@@ -11,7 +11,8 @@ import logging
 import re
 import sqlite3
 import time
-from pathlib import Path
+from pathlib import Path  # noqa: F401  (re-exported via _project_key local import below)
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,35 +47,55 @@ def _fts_query(probe: str) -> str:
     return " OR ".join(f"{t}*" for t in terms)
 
 
-def wait_for_worker_drain(*, session_id: str, timeout_s: float = 90.0) -> bool:
-    """Poll ``pending_messages`` until the scenario's queue is empty.
+def wait_for_worker_drain(
+    *, session_id: str, project: str = "", timeout_s: float = 90.0
+) -> bool:
+    """Poll until the scenario's queue is empty AND at least one observation lands.
 
     claude-mem's background worker processes queued turn messages and
-    generates observations asynchronously via an LLM extraction call. For a
-    fair comparison we wait until the queue has drained before scoring.
+    generates observations asynchronously via an LLM extraction call. The
+    pending_messages row transitions to status='completed' shortly *before*
+    the observation row is committed, so a strict queue-empty check races
+    against retrieval. We additionally poll for a project-scoped observation
+    to land before declaring the worker done.
 
     Args:
         session_id (str): ``content_session_id`` rows were inserted under.
+        project (str): Project basename or full path; used to scope the
+            observation-presence probe. Empty string skips the probe (the
+            harness still works, but retrieval may race).
         timeout_s (float): Max wait before giving up. Per-scenario extraction
             can take 30–60s because each pending_message issues one LLM call.
 
     Returns:
-        bool: True if the queue drained, False on timeout. The harness still
+        bool: True if the queue drained and (when ``project`` is set) an
+            observation materialized; False on timeout. The harness still
             scores either way; False is logged in the result row.
     """
+    project_key = Path(project).name or project if project else ""
     deadline = time.monotonic() + timeout_s
     with sqlite3.connect(f"file:{CLAUDE_MEM_DB}?mode=ro", uri=True) as conn:
         while time.monotonic() < deadline:
-            row = conn.execute(
+            pending = conn.execute(
                 "SELECT COUNT(*) FROM pending_messages "
                 "WHERE content_session_id = ? AND status IN ('pending', 'processing')",
                 (session_id,),
-            ).fetchone()
-            if row[0] == 0:
-                return True
+            ).fetchone()[0]
+            if pending == 0:
+                if not project_key:
+                    return True
+                obs = conn.execute(
+                    "SELECT COUNT(*) FROM observations WHERE project = ?",
+                    (project_key,),
+                ).fetchone()[0]
+                if obs > 0:
+                    return True
             time.sleep(1.5)
     _LOGGER.warning(
-        "claude-mem worker did not drain session=%s within %ss", session_id, timeout_s
+        "claude-mem worker did not drain session=%s project=%s within %ss",
+        session_id,
+        project_key,
+        timeout_s,
     )
     return False
 

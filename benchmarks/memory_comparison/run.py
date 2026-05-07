@@ -16,9 +16,12 @@ import argparse
 import json
 import logging
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+INTER_SCENARIO_PAUSE_S = 4.0
 
 _THIS_DIR = Path(__file__).resolve().parent
 _PKG_ROOT = _THIS_DIR.parents[1]  # benchmarks/memory_comparison -> repo root
@@ -104,12 +107,14 @@ def _run_scenario(scenario: Scenario, *, dry_run: bool) -> ScenarioResult:
             scenario.id,
         )
         if not smart_adapter.wait_for_extraction(
-            project_dir=project_dir, session_id=session_id, timeout_s=90.0
+            project_dir=project_dir, session_id=session_id, timeout_s=150.0
         ):
             smart_notes.append("extraction timeout; scores may understate")
         LOG.info("[%s] waiting for claude-mem worker to drain", scenario.id)
         if not mem_adapter.wait_for_worker_drain(
-            session_id=session_id, timeout_s=180.0
+            session_id=session_id,
+            project=str(project_dir),
+            timeout_s=180.0,
         ):
             mem_notes.append("worker drain timeout; scores may understate")
 
@@ -209,7 +214,13 @@ def _format_report(rows: list[ScenarioResult], agg: dict) -> str:
     lines.append("")
     lines.append("| Category | System | Recall | Specificity | N |")
     lines.append("| --- | --- | ---: | ---: | ---: |")
-    category_order = ["personalization", "correction", "general", "overall"]
+    category_order = [
+        "personalization",
+        "correction",
+        "general",
+        "learning",
+        "overall",
+    ]
     for cat in category_order:
         if cat not in agg:
             continue
@@ -293,7 +304,9 @@ def main() -> int:
     md_path = RESULTS_DIR / f"report-{ts}.md"
 
     rows: list[ScenarioResult] = []
-    for scenario in scenarios:
+    for idx, scenario in enumerate(scenarios):
+        if idx > 0 and not args.dry_run:
+            time.sleep(INTER_SCENARIO_PAUSE_S)
         rows.append(_run_scenario(scenario, dry_run=args.dry_run))
 
     agg = _aggregate(rows)

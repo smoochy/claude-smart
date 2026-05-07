@@ -43,3 +43,6 @@ benchmarks/memory_comparison/results
 
 # Local marketplace
 local-marketplace/
+
+# Scheduled tasks lock
+.claude/scheduled_tasks.lock
