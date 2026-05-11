@@ -162,7 +162,7 @@ export default function SkillsPage() {
         title="Skills"
         description="Project-specific and shared skills learned from corrections."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
             <Select
               value={agentVersion}
               onValueChange={(v) => setAgentVersion(v ?? "__all__")}
