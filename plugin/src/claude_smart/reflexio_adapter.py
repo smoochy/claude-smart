@@ -175,12 +175,10 @@ class Adapter:
             return False
 
     # -----------------------------------------------------------------
-    # Reads (used by SessionStart)
+    # Broad reads (used by /show)
     # -----------------------------------------------------------------
 
-    def fetch_user_playbooks(
-        self, *, project_id: str, top_k: int = 10
-    ) -> list[Any]:
+    def fetch_user_playbooks(self, *, project_id: str, top_k: int = 10) -> list[Any]:
         """Fetch CURRENT user playbooks for ``project_id``.
 
         User playbooks are project-scoped: filtering by ``user_id=project_id``
@@ -306,7 +304,7 @@ class Adapter:
         )
 
     # -----------------------------------------------------------------
-    # SessionStart broad fetch (no query → can't use unified /api/search)
+    # Broad fetch for explicit audit views (no query → can't use unified /api/search)
     # -----------------------------------------------------------------
 
     def fetch_all(
@@ -317,10 +315,10 @@ class Adapter:
         agent_playbook_top_k: int = 10,
         profile_top_k: int = 20,
     ) -> tuple[list[Any], list[Any], list[Any]]:
-        """Parallel broad fetch for SessionStart → ``(user_playbooks,
+        """Parallel broad fetch for /show → ``(user_playbooks,
         agent_playbooks, preferences)``.
 
-        Unified search rejects empty queries, so SessionStart still uses
+        Unified search rejects empty queries, so explicit audit views use
         per-entity endpoints. User playbooks and preferences are scoped to
         ``project_id``; agent playbooks are global (filtered only by
         ``agent_version``).

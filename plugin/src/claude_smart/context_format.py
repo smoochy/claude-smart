@@ -1,4 +1,4 @@
-"""Render reflexio preferences + skills as markdown for SessionStart injection."""
+"""Render reflexio preferences + skills as markdown for display or injection."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def render(
     agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
 ) -> str:
-    """Render skills + preferences as SessionStart markdown.
+    """Render skills + preferences as full audit markdown.
 
     Empty sections are omitted. When all sections are empty, returns "".
 
@@ -106,9 +106,9 @@ def render_inline(
 ) -> str:
     """Render skills + preferences for mid-session injection.
 
-    Same bullet format as ``render`` but with no top-level project header —
-    this block is injected just-in-time alongside an in-flight tool call, not
-    at session start, so the caller already has project context.
+    Same bullet format as ``render`` but with no top-level project header.
+    This block is injected just-in-time alongside an in-flight user prompt or
+    tool call, so the caller already has project context.
 
     Args:
         project_id (str): Reserved for future use; currently unused.

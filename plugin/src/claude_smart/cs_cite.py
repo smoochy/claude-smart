@@ -1,6 +1,6 @@
 """Support helpers for the ``cs-cite`` citation channel.
 
-Context injected at SessionStart / PreToolUse tags each skill and
+Context injected by UserPromptSubmit / PreToolUse tags each skill and
 preference bullet with a rank-based id fingerprinted by the underlying
 real id (``[cs:s1-1a2b]`` for the first skill whose
 ``user_playbook_id`` starts with ``1a2b``, ``[cs:p2-c3d4]`` for the
@@ -180,8 +180,8 @@ def parse_citation_command(command: str) -> list[str]:
 def ensure_installed() -> Path:
     """Idempotently install ``cs-cite`` into ``~/.claude-smart/bin/``.
 
-    Called from SessionStart and from every PreToolUse / UserPromptSubmit
-    inject, so we short-circuit when the target file already exists with
+    Called from every PreToolUse / UserPromptSubmit inject, so we
+    short-circuit when the target file already exists with
     the executable bit set — the steady-state path is one ``stat`` syscall
     instead of mkdir + copy + stat + chmod. Keying on filesystem state
     (rather than a module-level boolean) keeps test isolation working when

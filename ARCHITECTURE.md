@@ -5,7 +5,7 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
 ## Core components
 
 1. **6 lifecycle hooks** (`plugin/hooks/hooks.json`)
-   - `SessionStart` — fetches skills from reflexio and injects them as `additionalContext`.
+   - `SessionStart` — applies claude-smart/reflexio defaults and starts supporting services; it does not retrieve memory.
    - `UserPromptSubmit` — buffers each user turn, heuristically flags corrections, and searches reflexio with the prompt text to inject matching preference/skill hits as `additionalContext`.
    - `PreToolUse` — searches reflexio keyed on the first line of the tool-call text (Bash command, Edit `new_string`, etc.) and injects top matches as `additionalContext`.
    - `PostToolUse` — records tool invocations for later extraction.
@@ -30,9 +30,9 @@ Claude Code session
                                         └────────────┬────────────┘
                                                      │
                                                      ▼
-Next session → SessionStart → fetch project-specific skills, shared skills,
-              and preferences → additionalContext injected into Claude's
-              system prompt
+Next user prompt / tool call → query-aware search for project-specific skills,
+                              shared skills, and preferences
+                           → additionalContext injected with matching hits
 ```
 
 ## Mapping to reflexio

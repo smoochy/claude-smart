@@ -232,9 +232,7 @@ def test_search_all_calls_unified_endpoint_with_project_scope() -> None:
 def test_search_all_makes_one_client_call() -> None:
     """Server-side fan-out: a single /api/search hits all three legs."""
     client = _RecordingClient(
-        unified_resp=SimpleNamespace(
-            user_playbooks=[], agent_playbooks=[], profiles=[]
-        )
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
     )
     a = _adapter_with(client)
     a.search_all(project_id="p", query="q")
@@ -320,10 +318,8 @@ def test_fetch_all_absorbs_per_leg_failure() -> None:
 
 
 def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:
-    """SessionStart's broad inject used to be 50; narrowed because PreToolUse carries specificity."""
-    client = _RecordingClient(
-        user_playbook_resp=SimpleNamespace(user_playbooks=[])
-    )
+    """/show uses a narrow broad-fetch default; prompt-time search carries specificity."""
+    client = _RecordingClient(user_playbook_resp=SimpleNamespace(user_playbooks=[]))
     a = _adapter_with(client)
     a.fetch_user_playbooks(project_id="proj")
     assert client.user_playbook_kwargs["user_id"] == "proj"
@@ -332,9 +328,7 @@ def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:
 
 
 def test_fetch_agent_playbooks_is_global() -> None:
-    client = _RecordingClient(
-        agent_playbook_resp=SimpleNamespace(agent_playbooks=[])
-    )
+    client = _RecordingClient(agent_playbook_resp=SimpleNamespace(agent_playbooks=[]))
     a = _adapter_with(client)
     a.fetch_agent_playbooks()
     assert "user_id" not in client.agent_playbook_kwargs
@@ -366,14 +360,17 @@ def test_search_all_filters_rejected_locally() -> None:
 
 
 def test_fetch_agent_playbooks_filters_rejected_locally() -> None:
-    """Same defensive filter on the no-query SessionStart path."""
+    """Same defensive filter on the no-query /show path."""
 
     class StubClient:
         def search_agent_playbooks(self, **_kw):
             return SimpleNamespace(
                 agent_playbooks=[
                     {"content": "approved", "playbook_status": "approved"},
-                    {"content": "rejected", "playbook_status": "REJECTED"},  # case-insensitive
+                    {
+                        "content": "rejected",
+                        "playbook_status": "REJECTED",
+                    },  # case-insensitive
                 ]
             )
 

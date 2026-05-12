@@ -149,7 +149,7 @@ claude-smart builds three artifacts as you work and injects the relevant ones in
 
 Skills clean themselves up: correct the same thing twice and they merge; change your mind and the old one is archived.
 
-Under the hood: hooks watch your turns, tool calls, and Claude's replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts preferences and project-specific skills, then rolls durable patterns into shared skills. Next session, the relevant context gets injected into the system prompt — run `/show` to see what Claude is being told. Everything runs on your machine.
+Under the hood: hooks watch your turns, tool calls, and Claude's replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts preferences and project-specific skills, then rolls durable patterns into shared skills. On each new user prompt, claude-smart searches for matching context and injects only the relevant hits. Run `/show` to audit the current learned state. Everything runs on your machine.
 
 **Citations (`cs-cite`).** At the end of a reply, Claude may run:
 
@@ -171,7 +171,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for hooks, data flow, and reflexio deta
 | Command | What it does |
 | --- | --- |
 | `/dashboard` | Open the dashboard in your browser, auto-starting the reflexio backend and dashboard services if they aren't already running. |
-| `/show` | Print current project-specific skills plus the current project's preferences (same markdown that `SessionStart` injects). Use it to audit what skills and preferences Claude is being told to follow. |
+| `/show` | Print current project-specific skills, shared skills, and the current project's preferences so you can audit learned state manually. |
 | `/learn [note]` | Flag the most recent turn as a correction (for cases the automatic heuristic missed) and force reflexio to run extraction *now* on the session's unpublished interactions. The optional note becomes the correction description the extractor sees. |
 | `/restart` | Restart the reflexio backend and dashboard to pick up new changes (e.g. after upgrading the plugin or editing local reflexio code). |
 | `/clear-all` | **Destructive.** Delete *all* reflexio interactions, preferences, and skills. Use when you want to wipe learned state and start fresh. |

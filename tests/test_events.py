@@ -1232,7 +1232,7 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
 
 
 # -----------------------------------------------------------------------------
-# session_start - emit_continue when nothing to render
+# session_start - apply defaults, but do not retrieve memory
 # -----------------------------------------------------------------------------
 
 
@@ -1248,7 +1248,7 @@ def test_session_start_emits_continue_without_session_id(
     }
 
 
-def test_session_start_emits_continue_when_no_skill_or_preference(
+def test_session_start_emits_continue_without_memory_lookup(
     session_dir, monkeypatch
 ) -> None:
     class StubAdapter:
@@ -1259,7 +1259,7 @@ def test_session_start_emits_continue_when_no_skill_or_preference(
             return True
 
         def fetch_all(self, **_kw):
-            return ([], [], [])
+            raise AssertionError("SessionStart must not fetch memory")
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: StubAdapter()
@@ -1273,7 +1273,7 @@ def test_session_start_emits_continue_when_no_skill_or_preference(
     }
 
 
-def test_session_start_emits_additional_context_when_playbook_present(
+def test_session_start_ignores_available_memory_and_continues(
     session_dir, monkeypatch
 ) -> None:
     class Stub:
@@ -1284,31 +1284,18 @@ def test_session_start_emits_additional_context_when_playbook_present(
             return True
 
         def fetch_all(self, **_kw):
-            return (
-                [
-                    {
-                        "content": "use pathlib",
-                        "trigger": "file ops",
-                        "rationale": "safer",
-                    }
-                ],
-                [],
-                [],
-            )
+            raise AssertionError("SessionStart must not fetch memory")
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
     )
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.ids.resolve_project_id",
-        lambda *_a, **_kw: "demo",
-    )
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     session_start.handle({"session_id": "s1", "source": "startup"})
-    payload = json.loads(buf.getvalue().strip())
-    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-    assert "use pathlib" in payload["hookSpecificOutput"]["additionalContext"]
+    assert json.loads(buf.getvalue().strip()) == {
+        "continue": True,
+        "suppressOutput": True,
+    }
 
 
 def test_session_start_applies_claude_smart_extraction_defaults(
@@ -1330,10 +1317,6 @@ def test_session_start_applies_claude_smart_extraction_defaults(
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.ids.resolve_project_id",
-        lambda *_a, **_kw: "demo",
     )
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
@@ -1360,10 +1343,6 @@ def test_session_start_skips_optimizer_defaults_when_opted_out(
     monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "0")
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.ids.resolve_project_id",
-        lambda *_a, **_kw: "demo",
     )
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
@@ -1393,10 +1372,6 @@ def test_session_start_applies_optimizer_defaults_by_default(
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
     )
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.ids.resolve_project_id",
-        lambda *_a, **_kw: "demo",
-    )
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
 
@@ -1410,10 +1385,9 @@ def test_session_start_applies_optimizer_defaults_by_default(
     ]
 
 
-def test_session_start_fetches_all_memory_on_every_source(
+def test_session_start_never_fetches_memory_for_any_source(
     session_dir, monkeypatch
 ) -> None:
-    """Used to skip preference fetch for some sources; now always fetches all."""
     calls: list[dict[str, Any]] = []
 
     class Stub:
@@ -1425,22 +1399,20 @@ def test_session_start_fetches_all_memory_on_every_source(
 
         def fetch_all(self, **kwargs):
             calls.append(kwargs)
-            return ([], [], [])
+            raise AssertionError("SessionStart must not fetch memory")
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.ids.resolve_project_id",
-        lambda *_a, **_kw: "demo",
     )
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     for source in ("startup", "resume", "clear", "compact"):
         session_start.handle({"session_id": "s1", "source": source})
-    assert len(calls) == 4
-    for kw in calls:
-        assert kw["project_id"] == "demo"
+        assert json.loads(buf.getvalue().strip().splitlines()[-1]) == {
+            "continue": True,
+            "suppressOutput": True,
+        }
+    assert calls == []
 
 
 # -----------------------------------------------------------------------------
