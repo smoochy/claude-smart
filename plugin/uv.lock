@@ -434,7 +434,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
-    { name = "reflexio-ai", specifier = ">=0.2.21" },
+    { name = "reflexio-ai", specifier = ">=0.2.22" },
 ]
 
 [package.metadata.requires-dev]
@@ -811,6 +811,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e1/cf/b50ddf667c15276a9ab15a70ef5f257564de271957933ffea49d2cdbcdfb/fsspec-2026.3.0.tar.gz", hash = "sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41", size = 313547, upload-time = "2026-03-27T19:11:14.892Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/1f/5f4a3cd9e4440e9d9bc78ad0a91a1c8d46b4d429d5239ebe6793c9fe5c41/fsspec-2026.3.0-py3-none-any.whl", hash = "sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4", size = 202595, upload-time = "2026-03-27T19:11:13.595Z" },
+]
+
+[[package]]
+name = "gepa"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/62/10f5a8f24c075e3b64f952be73ba8e15f0055584bbcdf9ce48d754a36679/gepa-0.1.1.tar.gz", hash = "sha256:643fda01c23de4c9f01306e01305dd69facc29bcb34ad59e4cd07e6621d34aa1", size = 272251, upload-time = "2026-03-16T10:17:53.131Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/b7/8c72dedbb950d88a6f64588fcbc590d2a21e2b9f19b36aa6c5016c54ec75/gepa-0.1.1-py3-none-any.whl", hash = "sha256:71ead7c591eafcc727b83509cdc4182f20264800a6ddf8520d61419daeb47466", size = 244246, upload-time = "2026-03-16T10:17:51.922Z" },
 ]
 
 [[package]]
@@ -2607,7 +2616,7 @@ wheels = [
 
 [[package]]
 name = "reflexio-ai"
-version = "0.2.21"
+version = "0.2.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2619,6 +2628,7 @@ dependencies = [
     { name = "colorlog" },
     { name = "duckduckgo-search" },
     { name = "fastapi" },
+    { name = "gepa" },
     { name = "hdbscan" },
     { name = "httpx" },
     { name = "json-repair" },
@@ -2643,9 +2653,9 @@ dependencies = [
     { name = "websocket-client" },
     { name = "xlsxwriter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/f5/8e0f08be5aee55425fa31f5b888e8f2f45c6d27f0fa69b2c46bdc0df878c/reflexio_ai-0.2.21.tar.gz", hash = "sha256:758b132b562f4aa18c7dd42136e0cc7b2cd0c3881364960078d504fa61fdad0d", size = 650558, upload-time = "2026-05-06T16:49:39.356Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/27/4c0ecd8ea5590be7263826e2632c682f6a25f60f5eba72e1f254c0d0c94d/reflexio_ai-0.2.22.tar.gz", hash = "sha256:4b3d6db4f618e93f009960e27886bc08c4d9a048666624d1aec706b5331e677d", size = 709115, upload-time = "2026-05-12T17:42:50.388Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/7d/5708a4d7062ec0cef90cc0b2c8fda7ed3c61cfdc2cf292bde66a50f58014/reflexio_ai-0.2.21-py3-none-any.whl", hash = "sha256:cd79513502ad7a4e30f7a70dc6a8bcdc2d10337608d4db628b90f36c5c6a51d5", size = 872892, upload-time = "2026-05-06T16:49:37.57Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/73/83fee07d8f4465457c259d74c0c8cd1803519cc44f560de65935a8dff6c9/reflexio_ai-0.2.22-py3-none-any.whl", hash = "sha256:ace549dc8e88cddd80f1dd7efb6d9a04a9aa7a5ac7e3f1cafe44ae059404a1e3", size = 915403, upload-time = "2026-05-12T17:42:52.008Z" },
 ]
 
 [[package]]

@@ -14,7 +14,8 @@
 #   - git (for the release flow)
 
 .PHONY: help bump release publish publish-npm publish-pypi publish-dry \
-        check-version check-clean check-npm-auth ensure-remote-reflexio unskip-worktree
+        check-version check-clean check-npm-auth check-reflexio-pin \
+        ensure-remote-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json \
@@ -35,6 +36,19 @@ endif
 check-clean:
 	@git diff --quiet && git diff --cached --quiet \
 	  || { echo "error: working tree is dirty — commit or stash first" >&2; exit 1; }
+
+check-reflexio-pin: ## Verify the reflexio-ai version pinned in plugin/pyproject.toml exists on PyPI
+	@pin=$$(grep -oE '"reflexio-ai>=[0-9][^"]*"' $(PYPROJECT) | sed -E 's/.*reflexio-ai>=([0-9.]+).*/\1/' | head -1); \
+	  if [ -z "$$pin" ]; then \
+	    echo "error: could not parse reflexio-ai pin from $(PYPROJECT)" >&2; exit 1; \
+	  fi; \
+	  echo "→ verifying reflexio-ai $$pin exists on PyPI"; \
+	  status=$$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/reflexio-ai/$$pin/json"); \
+	  if [ "$$status" != "200" ]; then \
+	    echo "error: reflexio-ai $$pin not found on PyPI (HTTP $$status); publish reflexio first or fix the pin in $(PYPROJECT)" >&2; \
+	    exit 1; \
+	  fi; \
+	  echo "→ ok: reflexio-ai $$pin is on PyPI"
 
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
@@ -72,7 +86,7 @@ bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in
 	       plugin/.claude-plugin/plugin.json.bak .claude-plugin/marketplace.json.bak \
 	       README.md.bak
 	@echo "→ refreshing uv lockfile (resolves reflexio-ai from PyPI)"
-	@uv lock --project plugin
+	@uv lock --refresh-package reflexio-ai --project plugin
 	@echo "→ resulting versions:"
 	@grep -HE '("version"|^version)' $(VERSION_FILES)
 
@@ -97,7 +111,7 @@ publish-dry: unskip-worktree ensure-remote-reflexio ## Show what would be publis
 
 publish: publish-npm publish-pypi ## Publish to both npm and PyPI
 
-release: check-version check-clean check-npm-auth bump ## Bump + commit + tag + publish + push
+release: check-version check-clean check-npm-auth check-reflexio-pin bump ## Bump + commit + tag + publish + push
 	@echo "→ committing release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"
