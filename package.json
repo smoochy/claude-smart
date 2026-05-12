@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.22",
+  "version": "0.2.23",
   "description": "Self-improving Claude Code plugin — learns from corrections via reflexio",
   "keywords": [
     "claude",
