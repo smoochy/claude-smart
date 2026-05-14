@@ -126,7 +126,7 @@ git pull --ff-only
 
 # 2. Dry-run to confirm what will ship (optional but cheap).
 make publish-dry
-#   → npm: tarball ~13 KB, 4 files: bin/claude-smart.js, LICENSE, README.md, package.json
+#   → npm: tarball includes bin/, .agents/plugins/marketplace.json, plugin/, LICENSE, README.md, package.json
 #   → PyPI: dist/ contains a wheel + sdist
 
 # 3. One-shot release. Bumps, commits, tags v$VERSION, publishes to both
@@ -177,7 +177,7 @@ Once published, end users update to the latest version with either:
 npx claude-smart update     # or: uvx claude-smart update
 ```
 
-Both wrap `claude plugin update claude-smart@reflexioai`. Users restart Claude Code to apply.
+Both wrap `claude plugin update claude-smart@reflexioai`. Users restart Claude Code to apply. Codex users rerun `npx claude-smart install --host codex`, then restart Codex after `/plugins` has upgraded the installed plugin.
 
 ## Pre-release checklist
 
@@ -228,9 +228,9 @@ rm -f package.json.bak pyproject.toml.bak .claude-plugin/*.bak
 
 ## Developing locally
 
-For iterating on claude-smart itself — editing hooks, the Python package, the dashboard, or the reflexio submodule — install from a clone and point Claude Code at your working copy. End users don't need any of this; the `npx`/`uvx` install flow in the README covers them.
+For iterating on claude-smart itself — editing hooks, the Python package, the dashboard, or the reflexio submodule — install from a clone and point the host at your working copy. End users don't need any of this; the `npx`/`uvx` install flow in the README covers them.
 
-### Two independent axes
+### Local install overview
 
 You can flip each axis independently — e.g. local plugin + PyPI reflexio is a valid combination (you're touching hooks/slash commands/dashboard but not the backend), and so is remote plugin + local reflexio (smoke-test the shipped plugin against a patched backend).
 
@@ -239,11 +239,18 @@ You can flip each axis independently — e.g. local plugin + PyPI reflexio is a 
 | **Plugin** — hooks, slash commands, Python package, dashboard | this repo's `plugin/` (marketplace `reflexioai-local`) | GitHub cache `~/.claude/plugins/cache/reflexioai/…` | `.claude/settings.local.json` → `enabledPlugins` |
 | **reflexio** — backend, extraction, storage | vendored submodule at `reflexio/` (editable) | PyPI wheel `reflexio-ai` | `plugin/pyproject.toml` → `[tool.uv.sources]` |
 
-### Fast path: one-shot setup for "everything local"
+Start every local install from a clone:
 
 ```bash
 git clone --recurse-submodules https://github.com/ReflexioAI/claude-smart.git
 cd claude-smart
+```
+
+### Claude Code local install
+
+Use the one-shot setup when developing the Claude Code plugin, dashboard, or local `reflexio` submodule:
+
+```bash
 bash scripts/setup-local-dev.sh
 ```
 
@@ -253,13 +260,89 @@ Idempotent. This single script handles everything — see its header comment for
 2. Uncomments `[tool.uv.sources]` in `plugin/pyproject.toml` (absolute path to the submodule) and hides the divergence with `git update-index --skip-worktree`.
 3. `uv sync` in `plugin/`.
 4. Appends `CLAUDE_SMART_USE_LOCAL_CLI=1` and `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` to `~/.reflexio/.env`.
-5. Registers the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope via `claude plugin marketplace add`.
+5. Prepares and registers the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope via `claude plugin marketplace add`.
 6. Writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
 7. Force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
 
-**Then restart Claude Code.** That's the only manual step.
+Then restart Claude Code. In the new session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`.
 
-### Switching axis 1 — plugin source (local ↔ remote)
+Uninstalling the local Claude Code plugin is a marketplace/settings cleanup:
+
+```bash
+claude plugin marketplace remove reflexioai-local
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path(".claude/settings.local.json")
+if path.exists():
+    data = json.loads(path.read_text() or "{}")
+    enabled = data.get("enabledPlugins")
+    if isinstance(enabled, dict):
+        enabled.pop("claude-smart@reflexioai-local", None)
+        enabled.pop("claude-smart@reflexioai", None)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+rm -f ~/.reflexio/plugin-root
+```
+
+This leaves learned data under `~/.reflexio/` and `~/.claude-smart/` intact.
+
+### Codex local install
+
+Codex local development creates a durable local marketplace wrapper at `~/.claude/plugins/marketplaces/reflexioai`. The wrapper copies this checkout's `plugin/` directory to `./plugins/claude-smart`, which keeps Codex's plugin folder name aligned with the manifest name while preserving the existing Claude Code layout:
+
+```bash
+uv run --project plugin claude-smart install --host codex
+```
+
+Then fully restart Codex, open `/plugins`, and install `claude-smart` from the **ReflexioAI** marketplace. Restart Codex again after installation so hooks reload. Codex caches the installed plugin under `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`.
+
+For live hook iteration, point Codex at this checkout before the cache:
+
+```bash
+mkdir -p ~/plugins
+ln -sfn "$PWD/plugin" ~/plugins/claude-smart
+```
+
+This symlink is only for local plugin development; normal `npx claude-smart install --host codex` users should not create it. The Codex hook resolver checks `~/plugins/claude-smart` before the Codex cache, so Python, hook, and script edits in `$PWD/plugin` are picked up without reinstalling the marketplace. Without that dev symlink, rerun `uv run --project plugin claude-smart install --host codex` after plugin edits so the wrapper copy is refreshed.
+
+Uninstall local Codex support with the CLI. This removes the Codex marketplace registration, installed plugin config, hook trust state, and Codex plugin cache while preserving learned data:
+
+```bash
+uv run --project plugin claude-smart uninstall --host codex
+rm -f ~/plugins/claude-smart
+```
+
+If `/plugins` still shows a stale pre-rename install, remove the legacy Codex state too:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path.home() / ".codex" / "config.toml"
+text = path.read_text()
+lines = text.splitlines(keepends=True)
+drop_prefixes = (
+    '[marketplaces.claude-smart-local]',
+    '[plugins."claude-smart@claude-smart-local"]',
+    '[hooks.state."claude-smart@claude-smart-local:',
+)
+out = []
+dropping = False
+for line in lines:
+    if line.startswith("[") and line.rstrip().endswith("]"):
+        dropping = any(line.startswith(prefix) for prefix in drop_prefixes)
+    if not dropping:
+        out.append(line)
+path.write_text("".join(out))
+PY
+rm -rf ~/.codex/plugins/cache/claude-smart-local
+```
+
+Restart Codex after uninstalling. Learned data under `~/.reflexio/` and `~/.claude-smart/` is intentionally preserved.
+
+### Switching Claude Code plugin source (local ↔ remote)
 
 Edit `.claude/settings.local.json` to flip which variant is enabled (both must be present so the other one is explicitly disabled and can't shadow):
 
@@ -279,7 +362,7 @@ Edit `.claude/settings.local.json` to flip which variant is enabled (both must b
 ```
 
 Prerequisites (one-time, already done by `setup-local-dev.sh`):
-- Local marketplace registered at user scope: `claude plugin marketplace add $PWD/local-marketplace`.
+- Local marketplace prepared and registered at user scope: `claude plugin marketplace add $PWD/local-marketplace`.
 - Remote marketplace registered at user scope (`~/.claude/settings.json` → `extraKnownMarketplaces.reflexioai` → `github: ReflexioAI/claude-smart`).
 
 **Apply the change:** restart Claude Code. In the new session, `/plugin` must show **exactly one** `claude-smart@…` entry (if it shows two, the scopes are stacking).
@@ -406,9 +489,11 @@ Useful when you're modifying the `install` subcommand itself and want to test wi
 ```bash
 uv run --project plugin claude-smart install --source $PWD    # Python path
 node bin/claude-smart.js install --source $PWD                # Node path
+uv run --project plugin claude-smart install --host codex      # Codex repo-local path
+node bin/claude-smart.js install --host codex                  # Codex packaged-marketplace path
 ```
 
-Both accept either a GitHub `owner/repo` ref or an absolute path to a local directory containing `.claude-plugin/marketplace.json`.
+The Claude Code install commands accept either a GitHub `owner/repo` ref or an absolute path to a local directory containing `.claude-plugin/marketplace.json`. The Codex Python path creates a local marketplace wrapper that copies this checkout's `plugin/`; the Codex Node path exercises the packaged no-clone flow by copying the bundled plugin into `~/.claude/plugins/marketplaces/reflexioai/plugins/claude-smart` before registering it with Codex.
 
 ## Tests
 

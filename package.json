@@ -27,6 +27,16 @@
   },
   "files": [
     "bin",
+    ".agents/plugins/marketplace.json",
+    "plugin",
+    "!plugin/**/__pycache__",
+    "!plugin/**/*.py[cod]",
+    "!plugin/**/.pytest_cache",
+    "!plugin/**/.ruff_cache",
+    "!plugin/**/.mypy_cache",
+    "!plugin/**/.venv",
+    "!plugin/**/node_modules",
+    "!plugin/**/.next/cache",
     "README.md",
     "LICENSE"
   ],

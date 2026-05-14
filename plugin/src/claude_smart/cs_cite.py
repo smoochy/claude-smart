@@ -88,6 +88,8 @@ CITATION_INSTRUCTION = (
     "`✨ 1 claude-smart learning applied [cs:s1-ab12]`. Use this exact format "
     "for multiple ids: `✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]`, "
     "where the number is the count of ids in the brackets. "
+    "Never emit a standalone wrapper like `✨s1-ab12✨` or `✨abc123✨`; "
+    "those are not claude-smart citations and cannot be resolved. "
     "Default is to skip. If an item is merely on-topic, confirms what you "
     "already planned, or your reply would read the same without it, do not "
     "cite — end the turn normally with your reply. When unsure, skip. Do "

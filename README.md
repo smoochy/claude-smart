@@ -6,7 +6,7 @@
   claude-smart
 </h1>
 
-<h4 align="center">The <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> plugin that makes Claude Code self-improve as you use it — so Claude Code stops repeating mistakes and gets better every session.</h4>
+<h4 align="center">A local learning plugin for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> and Codex that turns corrections into durable rules your coding assistant follows in future sessions.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -22,7 +22,7 @@
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node">
   </a>
   <a href="#quick-start">
-    <img src="https://img.shields.io/badge/llm-claude%20code%20cli-purple.svg" alt="LLM">
+    <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%2B%20Codex-purple.svg" alt="Hosts">
   </a>
   <a href="https://discord.gg/Jbft3jPn">
     <img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white" alt="Discord">
@@ -32,7 +32,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#slash-commands">Slash Commands</a> •
+  <a href="#commands">Commands</a> •
   <a href="#dashboard">Dashboard</a> •
   <a href="#configuration">Configuration</a> •
   <a href="TROUBLESHOOTING.md">Troubleshooting</a> •
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  It learns both corrections and successful execution patterns—so Claude Code avoids repeating mistakes and reuses what works. Project-specific skills capture repo-local rules, and shared skills roll up durable patterns for reuse across projects.
+  It learns both corrections and successful execution patterns—so your coding assistant avoids repeating mistakes and reuses what works. Project-specific skills capture repo-local rules, and shared skills roll up durable patterns for reuse across projects.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@ Most memory solutions are still mostly informative—Claude remembers what happe
 
 `claude-smart` focuses on learning instead.
 
-Four ways this changes what Claude Code can do for you:
+Four ways this changes what your coding assistant can do for you:
 
 - 💡 **Stop repeating the same mistakes:** Produces actionable skills Claude can follow next time; memory only records what happened.
 
@@ -77,6 +77,8 @@ Four ways this changes what Claude Code can do for you:
 ---
 
 ## Quick Start
+
+### Claude Code
 
 ```bash
 claude plugin marketplace add ReflexioAI/claude-smart
@@ -108,10 +110,45 @@ Or, if you already have Node.js or uv:
 npx claude-smart uninstall     # or: uvx claude-smart uninstall
 ```
 
-Local data under `~/.reflexio/` and `~/.claude-smart/` is left in place — remove manually if desired.
+### Codex
+
+You need the `codex` CLI on `PATH` and Node.js available for `npx`:
+
+```bash
+npx claude-smart install --host codex
+```
+
+The helper registers the bundled **ReflexioAI** marketplace with Codex and
+enables Codex plugin hooks. Then:
+
+1. Fully quit and reopen Codex in your project.
+2. Run `/plugins`.
+3. Install `claude-smart` from the **ReflexioAI** marketplace.
+4. Restart Codex again so hooks reload.
+
+Do not create a `~/plugins/claude-smart` symlink for a normal `npx` install;
+that symlink is only for plugin development from a cloned checkout.
+
+Installing from a clone is only for plugin development; see
+[DEVELOPER.md](./DEVELOPER.md#developing-locally).
+
+Codex and Claude Code intentionally share the same `CLAUDE_SMART_*` environment
+variables, `~/.reflexio/` data, `~/.claude-smart/` session buffers, backend,
+dashboard, and learned skills/preferences.
+
+
+To uninstall:
+
+```bash
+npx claude-smart uninstall --host codex
+```
+
+This removes the Codex marketplace registration, installed plugin config, and
+Codex plugin cache. Local data under `~/.reflexio/` and `~/.claude-smart/` is
+left in place — remove manually if desired. Restart Codex after uninstalling.
 
 Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally).
-> **Not supported:** Claude Code Cowork and claude.ai/code web — they run in a remote sandbox, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
+> **Not supported:** Claude Code Cowork, claude.ai/code web, or remote Codex environments without local plugin hooks — they run outside your local machine, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
 
 ---
 
@@ -124,13 +161,13 @@ Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-local
 - 🔌 **No external API call** — semantic search runs on an in-process ONNX embedder (all-MiniLM-L6-v2), and all data (preferences, skills, interaction buffers) is stored locally on your machine (`~/.reflexio/` and `~/.claude-smart/`).
 - 🔎 **Hybrid search** — Skills and preferences are indexed with vector + BM25 search for fast, robust retrieval.
 - 🧪 **Offline resilience** — If the reflexio backend is down, hooks buffer to disk; the next successful publish drains them.
-- 🧰 **Manual correction marker** — `/claude-smart:learn` flags the last turn as a correction so the extractor weights it heavily.
+- 🧰 **Manual correction marker** — `/claude-smart:learn` in Claude Code, or `bash ~/.reflexio/plugin-root/scripts/cli.sh learn` in Codex, flags the last turn as a correction so the extractor weights it heavily.
 
 ---
 
 ## Dashboard
 
-A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to launch dashboard in browser.
+A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to launch dashboard in browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
 
 <p align="center">
   <img src="assets/preferences_dashboard.png" alt="Preferences dashboard" width="49%">
@@ -141,7 +178,7 @@ A web UI for browsing session histories, inspecting preferences, and editing pro
 
 ## How It Works
 
-claude-smart builds three artifacts as you work and injects the relevant ones into Claude:
+claude-smart builds three artifacts as you work and injects the relevant ones into Claude Code or Codex:
 
 - **Preferences** (project-scoped) — how you work in this specific repo (stack, role, small quirks). *e.g.* "uses pnpm, not npm"; "prefers terse answers"; "backend engineer — explain frontend with backend analogues."
 - **Project-specific skills** — durable rules with triggers and rationales learned from corrections in a project. *e.g.* "always pass `--run` to `npm test` — watch mode hangs CI."
@@ -149,32 +186,35 @@ claude-smart builds three artifacts as you work and injects the relevant ones in
 
 Skills clean themselves up: correct the same thing twice and they merge; change your mind and the old one is archived.
 
-Under the hood: hooks watch your turns, tool calls, and Claude's replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts preferences and project-specific skills, then rolls durable patterns into shared skills. On each new user prompt, claude-smart searches for matching context and injects only the relevant hits. Run `/show` to audit the current learned state. Everything runs on your machine.
+Under the hood: hooks watch your turns, tool calls, and assistant replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts preferences and project-specific skills, then rolls durable patterns into shared skills. On each new user prompt, claude-smart searches for matching context and injects only the relevant hits. Run `/show` or the equivalent CLI command to audit the current learned state. Everything runs on your machine.
 
-**Citations (`cs-cite`).** At the end of a reply, Claude may run:
+**Citations.** At the end of a reply, the assistant may append a short marker:
 
 ```
-⏺ Bash(cs-cite s1-252,p1-5aed)
-  ⎿  (No output)
-
-⏺ ✨ 2 claude-smart learnings applied
+✨ 2 claude-smart learnings applied [cs:s1-252,p1-5aed]
 ```
 
-That signals a preference (`p…`) or skill (`s…`) materially shaped the reply. Open the interaction's detail page in the [dashboard](#dashboard) to see the exact cited item.
+That signals a preference (`p…`) or skill (`s…`) materially shaped the reply.
+Standalone wrappers like `✨abc123✨` are not claude-smart citations and will not
+link back to dashboard entries. Open the interaction's detail page in the
+[dashboard](#dashboard) to see the exact cited item.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for hooks, data flow, and reflexio details.
 
 ---
 
-## Slash Commands
+## Commands
 
-| Command | What it does |
-| --- | --- |
-| `/dashboard` | Open the dashboard in your browser, auto-starting the reflexio backend and dashboard services if they aren't already running. |
-| `/show` | Print current project-specific skills, shared skills, and the current project's preferences so you can audit learned state manually. |
-| `/learn [note]` | Flag the most recent turn as a correction (for cases the automatic heuristic missed) and force reflexio to run extraction *now* on the session's unpublished interactions. The optional note becomes the correction description the extractor sees. |
-| `/restart` | Restart the reflexio backend and dashboard to pick up new changes (e.g. after upgrading the plugin or editing local reflexio code). |
-| `/clear-all` | **Destructive.** Delete *all* reflexio interactions, preferences, and skills. Use when you want to wipe learned state and start fresh. |
+Claude Code installs these as slash commands. In Codex, run the equivalent shell
+command directly, or ask Codex to run it.
+
+| Claude Code | Codex / shell | What it does |
+| --- | --- | --- |
+| `/dashboard` | `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh` | Open the dashboard in your browser, auto-starting the reflexio backend and dashboard services if they aren't already running. |
+| `/show` | `bash ~/.reflexio/plugin-root/scripts/cli.sh show` | Print current project-specific skills, shared skills, and the current project's preferences so you can audit learned state manually. |
+| `/learn [note]` | `bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note "optional note"` | Flag the most recent turn as a correction (for cases the automatic heuristic missed) and force reflexio to run extraction *now* on the session's unpublished interactions. The optional note becomes the correction description the extractor sees. |
+| `/restart` | `bash ~/.reflexio/plugin-root/scripts/cli.sh restart` | Restart the reflexio backend and dashboard to pick up new changes (e.g. after upgrading the plugin or editing local reflexio code). |
+| `/clear-all` | `bash ~/.reflexio/plugin-root/scripts/cli.sh clear-all --yes` | **Destructive.** Delete *all* reflexio interactions, preferences, and skills. Use when you want to wipe learned state and start fresh. |
 
 ---
 
@@ -189,6 +229,8 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
 | `~/.reflexio/.env` | Provider config — `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, any optional API keys. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
+| `~/.codex/config.toml` | Codex feature flags, including `plugin_hooks = true` after `claude-smart install --host codex`. |
+| `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Slash commands resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` | Cached ONNX weights (~86 MB, downloaded once). Delete to force a re-download. |
@@ -211,4 +253,4 @@ See the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Built on** [reflexio](https://github.com/ReflexioAI/reflexio) · **Runs on** [Claude Code](https://claude.com/claude-code) · **Written in** Python 3.12+
+**Built on** [reflexio](https://github.com/ReflexioAI/reflexio) · **Runs on** [Claude Code](https://claude.com/claude-code) and Codex · **Written in** Python 3.12+

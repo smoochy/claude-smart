@@ -49,6 +49,13 @@ def test_parse_text_citations_ignores_plain_inline_tags() -> None:
     assert cs_cite.parse_text_citations(text) == []
 
 
+def test_parse_text_citations_rejects_standalone_wrapper() -> None:
+    assert cs_cite.parse_text_citations("Answer.\n\n✨s2-cd34✨") == []
+    assert (
+        cs_cite.parse_text_citations("Answer.\n\n✨1gkgg8b9r7fx99kr2j3q6k5c1v✨") == []
+    )
+
+
 def test_parse_text_citations_uses_last_marker_line() -> None:
     text = (
         "✨ 1 claude-smart learning applied [cs:s1-1111]\n"

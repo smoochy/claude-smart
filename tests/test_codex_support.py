@@ -41,9 +41,92 @@ def test_codex_manifest_points_at_codex_hooks() -> None:
 def test_codex_marketplace_points_at_plugin_root() -> None:
     marketplace = _read_json(".agents/plugins/marketplace.json")
     entry = marketplace["plugins"][0]
+    assert marketplace["name"] == cli._CODEX_MARKETPLACE_NAME
+    assert (
+        marketplace["interface"]["displayName"] == cli._CODEX_MARKETPLACE_DISPLAY_NAME
+    )
     assert entry["name"] == "claude-smart"
     assert entry["source"]["path"] == "./plugin"
     assert entry["policy"]["installation"] == "AVAILABLE"
+
+
+def test_prepare_codex_local_marketplace_uses_named_plugin_path(
+    monkeypatch, tmp_path
+) -> None:
+    plugin_root = tmp_path / "repo" / "plugin"
+    plugin_root.mkdir(parents=True)
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
+    stale_file = marketplace_root / "old-copy" / "stale.txt"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("stale")
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", plugin_root)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
+
+    result = cli._prepare_codex_local_marketplace()
+
+    assert result == marketplace_root
+    manifest = json.loads(
+        (marketplace_root / ".agents" / "plugins" / "marketplace.json").read_text()
+    )
+    entry = manifest["plugins"][0]
+    assert entry["name"] == "claude-smart"
+    assert entry["source"]["path"] == "./plugins/claude-smart"
+    copied_plugin = marketplace_root / "plugins" / "claude-smart"
+    assert copied_plugin.is_dir()
+    assert not copied_plugin.is_symlink()
+    assert not stale_file.exists()
+
+
+def test_prepare_codex_local_marketplace_filters_dev_artifacts(
+    monkeypatch, tmp_path
+) -> None:
+    plugin_root = tmp_path / "repo" / "plugin"
+    (plugin_root / "src" / "claude_smart").mkdir(parents=True)
+    (plugin_root / "src" / "claude_smart" / "cli.py").write_text("# real\n")
+    (plugin_root / "src" / "claude_smart" / "__pycache__").mkdir()
+    (
+        plugin_root / "src" / "claude_smart" / "__pycache__" / "cli.cpython-312.pyc"
+    ).write_text("x")
+    (plugin_root / "src" / "claude_smart" / "cli.pyc").write_text("x")
+    (plugin_root / ".venv" / "bin").mkdir(parents=True)
+    (plugin_root / ".venv" / "bin" / "python").write_text("x")
+    (plugin_root / ".pytest_cache").mkdir()
+    (plugin_root / ".pytest_cache" / "CACHEDIR.TAG").write_text("x")
+    (plugin_root / ".ruff_cache").mkdir()
+    (plugin_root / "dashboard" / "node_modules").mkdir(parents=True)
+    (plugin_root / "dashboard" / "node_modules" / "package").mkdir()
+    (plugin_root / "dashboard" / ".next" / "cache").mkdir(parents=True)
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", plugin_root)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
+
+    cli._prepare_codex_local_marketplace()
+
+    copied = marketplace_root / "plugins" / "claude-smart"
+    assert (copied / "src" / "claude_smart" / "cli.py").is_file()
+    assert not (copied / "src" / "claude_smart" / "__pycache__").exists()
+    assert not (copied / "src" / "claude_smart" / "cli.pyc").exists()
+    assert not (copied / ".venv").exists()
+    assert not (copied / ".pytest_cache").exists()
+    assert not (copied / ".ruff_cache").exists()
+    assert not (copied / "dashboard" / "node_modules").exists()
+    assert not (copied / "dashboard" / ".next").exists()
+
+
+def test_npm_package_includes_codex_marketplace_payload() -> None:
+    package = _read_json("package.json")
+    files = set(package["files"])
+
+    assert ".agents/plugins/marketplace.json" in files
+    assert "plugin" in files
+    assert "!plugin/**/__pycache__" in files
+    assert "!plugin/**/*.py[cod]" in files
+
+
+def test_release_bump_updates_codex_manifest() -> None:
+    makefile = (REPO_ROOT / "Makefile").read_text()
+
+    assert "plugin/.codex-plugin/plugin.json" in makefile
 
 
 def test_hook_commands_pass_explicit_host() -> None:
@@ -211,8 +294,10 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
 ) -> None:
     env_path = tmp_path / "reflexio" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
     monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
 
     calls: list[list[str]] = []
@@ -232,8 +317,15 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     assert rc == 0
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_path.read_text()
     assert "plugin_hooks = true" in config_path.read_text()
-    assert ["plugin", "marketplace", "add", str(cli._REPO_ROOT)] in calls
-    assert "run /plugins" in capsys.readouterr().out
+    assert [
+        "plugin",
+        "marketplace",
+        "add",
+        str(marketplace_root),
+    ] in calls
+    out = capsys.readouterr().out
+    assert "run /plugins" in out
+    assert "ReflexioAI marketplace" in out
 
 
 def test_codex_install_fails_when_marketplace_registration_fails(
@@ -241,8 +333,10 @@ def test_codex_install_fails_when_marketplace_registration_fails(
 ) -> None:
     env_path = tmp_path / "reflexio" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
     monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
 
     def fake_run_codex(args: list[str]):
@@ -256,7 +350,9 @@ def test_codex_install_fails_when_marketplace_registration_fails(
 
     assert rc == 1
     assert "plugin_hooks = true" in config_path.read_text()
-    assert "marketplace registration failed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "marketplace registration failed" in out
+    assert "ReflexioAI marketplace" in out
 
 
 def test_codex_install_fails_when_required_files_missing(monkeypatch, tmp_path) -> None:
@@ -276,6 +372,94 @@ def test_codex_install_fails_when_codex_cli_missing(monkeypatch) -> None:
     rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
 
     assert rc == 1
+
+
+def test_remove_toml_sections_removes_codex_plugin_state(tmp_path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[plugins."claude-smart@reflexioai"]\n'
+        "enabled = true\n"
+        "\n"
+        '[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0"]\n'
+        'trusted_hash = "sha256:abc"\n'
+        "\n"
+        "[marketplaces.reflexioai]\n"
+        'source_type = "local"\n'
+        "\n"
+        '[plugins."browser@openai-bundled"]\n'
+        "enabled = true\n"
+    )
+
+    assert cli._remove_toml_sections(
+        config,
+        exact={
+            'plugins."claude-smart@reflexioai"',
+            "marketplaces.reflexioai",
+        },
+        prefixes=('hooks.state."claude-smart@reflexioai:',),
+    )
+
+    text = config.read_text()
+    assert "claude-smart@reflexioai" not in text
+    assert "marketplaces.reflexioai" not in text
+    assert '[plugins."browser@openai-bundled"]' in text
+
+
+def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        '[plugins."claude-smart@reflexioai"]\n'
+        "enabled = true\n"
+        "\n"
+        '[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0"]\n'
+        'trusted_hash = "sha256:abc"\n'
+        "\n"
+        "[marketplaces.reflexioai]\n"
+        'source_type = "local"\n'
+        "\n"
+        '[plugins."browser@openai-bundled"]\n'
+        "enabled = true\n"
+        "\n"
+        "[marketplaces.openai-bundled]\n"
+        'source_type = "builtin"\n'
+        "\n"
+        "[features]\n"
+        "plugin_hooks = true\n"
+    )
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
+    marketplace_root.mkdir(parents=True)
+    cache_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai"
+    plugin_cache = cache_root / "claude-smart"
+    plugin_cache.mkdir(parents=True)
+
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        cli,
+        "_run_codex",
+        lambda _args: type(
+            "Result", (), {"returncode": 0, "stdout": "", "stderr": ""}
+        )(),
+    )
+
+    rc = cli.cmd_uninstall(argparse.Namespace(host="codex"))
+
+    assert rc == 0
+    assert not marketplace_root.exists()
+    assert not plugin_cache.exists()
+    assert not cache_root.exists()
+    text = config.read_text()
+    assert "claude-smart@reflexioai" not in text
+    assert "marketplaces.reflexioai" not in text
+    assert "plugin_hooks = true" in text
+    assert '[plugins."browser@openai-bundled"]' in text
+    assert "[marketplaces.openai-bundled]" in text
+    assert "plugin and marketplace state removed" in capsys.readouterr().out
 
 
 def test_run_codex_times_out(monkeypatch) -> None:
