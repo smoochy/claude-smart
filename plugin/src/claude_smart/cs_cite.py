@@ -29,7 +29,8 @@ This module holds:
   is available. ``p`` is preference, ``s`` is skill.
 - ``CITATION_CMD_RE``: regex matching a valid legacy ``cs-cite`` command line.
 - ``ensure_installed``: idempotent copy of ``plugin/bin/cs-cite`` to
-  ``~/.claude-smart/bin/cs-cite`` with the executable bit set.
+  ``~/.local/bin/cs-cite`` (a standard XDG user bin dir on PATH) with
+  the executable bit set.
 - ``CITATION_INSTRUCTION``: the trailer text appended to injected context
   so the assistant knows when and how to emit the citation marker.
 """
@@ -48,7 +49,13 @@ _LOGGER = logging.getLogger(__name__)
 _THIS_DIR = Path(__file__).resolve().parent
 _PLUGIN_ROOT = _THIS_DIR.parents[1]  # plugin/src/claude_smart/ -> plugin/
 _SOURCE_SCRIPT = _PLUGIN_ROOT / "bin" / "cs-cite"
-_INSTALL_DIR = Path.home() / ".claude-smart" / "bin"
+# Install into ``~/.local/bin`` (a standard XDG user bin dir already on
+# PATH for any setup that runs pip/uv/cargo-style user installs). The
+# previous location ``~/.claude-smart/bin`` was self-contained but not
+# on PATH by default, which forced users to add it to their shell rc
+# file. Switching to ``~/.local/bin`` makes ``cs-cite`` discoverable
+# out of the box — no shell-init edits required.
+_INSTALL_DIR = Path.home() / ".local" / "bin"
 INSTALL_PATH = _INSTALL_DIR / "cs-cite"
 
 _FINGERPRINT_LEN = 4
@@ -200,7 +207,7 @@ def _parse_id_tokens(raw_ids: str) -> list[str]:
 
 
 def ensure_installed() -> Path:
-    """Idempotently install ``cs-cite`` into ``~/.claude-smart/bin/``.
+    """Idempotently install ``cs-cite`` into ``~/.local/bin/``.
 
     Called from every PreToolUse / UserPromptSubmit inject, so we
     short-circuit when the target file already exists with
