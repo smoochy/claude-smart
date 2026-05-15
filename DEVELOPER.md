@@ -298,6 +298,8 @@ uv run --project plugin claude-smart install --host codex
 
 Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries.
 
+If you install or toggle `claude-smart` manually from `/plugins`, rerun `npx claude-smart install --host codex` (or the `uv run` equivalent) once afterward so the hook feature flags, plugin cache, and claude-smart hook trust state are re-prepared.
+
 For live hook iteration, point Codex at this checkout before the cache:
 
 ```bash
