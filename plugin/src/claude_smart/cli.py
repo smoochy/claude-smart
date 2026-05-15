@@ -39,7 +39,21 @@ _REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 _DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart"
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
+_CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI"
+_CODEX_PLUGIN_ID = f"claude-smart@{_CODEX_MARKETPLACE_NAME}"
 _CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+_CODEX_LOCAL_MARKETPLACE_ROOT = (
+    Path.home() / ".claude" / "plugins" / "marketplaces" / _CODEX_MARKETPLACE_NAME
+)
+_CODEX_LOCAL_PLUGIN_PATH = Path("plugins") / "claude-smart"
+_CODEX_PLUGIN_CACHE_DIR = (
+    Path.home()
+    / ".codex"
+    / "plugins"
+    / "cache"
+    / _CODEX_MARKETPLACE_NAME
+    / "claude-smart"
+)
 _CODEX_CLI_TIMEOUT_SECONDS = 30
 _REFLEXIO_UNREACHABLE_MSG = (
     "Failed to reach reflexio. Check ~/.claude-smart/backend.log "
@@ -62,6 +76,16 @@ _CODEX_REQUIRED_FILES = (
     Path("plugin/.codex-plugin/plugin.json"),
     Path("plugin/hooks/codex-hooks.json"),
     Path("plugin/scripts/_codex_env.sh"),
+)
+_COPYTREE_IGNORE = shutil.ignore_patterns(
+    ".venv",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".next",
+    "node_modules",
 )
 
 
@@ -99,7 +123,71 @@ def _missing_codex_marketplace_files(root: Path) -> list[Path]:
     return [entry for entry in _CODEX_REQUIRED_FILES if not (root / entry).is_file()]
 
 
+def _prepare_codex_local_marketplace() -> Path:
+    """Create the local Codex marketplace wrapper used for install.
+
+    Wipes any prior wrapper at ``_CODEX_LOCAL_MARKETPLACE_ROOT``, copies
+    this checkout's ``plugin/`` directory under ``plugins/claude-smart``
+    (skipping dev artifacts in ``_COPYTREE_IGNORE``), and writes a fresh
+    ``.agents/plugins/marketplace.json`` pointing at it. The directory
+    name ``plugins/claude-smart`` keeps the on-disk plugin folder aligned
+    with the manifest name so Codex resolves it cleanly.
+
+    Returns:
+        Path: The marketplace root that Codex should register.
+    """
+    marketplace_root = _CODEX_LOCAL_MARKETPLACE_ROOT
+    marketplace_manifest = marketplace_root / ".agents" / "plugins" / "marketplace.json"
+    plugin_dir = marketplace_root / _CODEX_LOCAL_PLUGIN_PATH
+
+    if marketplace_root.exists() or marketplace_root.is_symlink():
+        if marketplace_root.is_dir() and not marketplace_root.is_symlink():
+            shutil.rmtree(marketplace_root)
+        else:
+            marketplace_root.unlink()
+    marketplace_manifest.parent.mkdir(parents=True, exist_ok=True)
+    plugin_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(_PLUGIN_ROOT, plugin_dir, symlinks=False, ignore=_COPYTREE_IGNORE)
+
+    marketplace_manifest.write_text(
+        json.dumps(
+            {
+                "name": _CODEX_MARKETPLACE_NAME,
+                "interface": {"displayName": _CODEX_MARKETPLACE_DISPLAY_NAME},
+                "plugins": [
+                    {
+                        "name": "claude-smart",
+                        "source": {
+                            "source": "local",
+                            "path": f"./{_CODEX_LOCAL_PLUGIN_PATH.as_posix()}",
+                        },
+                        "policy": {
+                            "installation": "AVAILABLE",
+                            "authentication": "ON_INSTALL",
+                        },
+                        "category": "Productivity",
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return marketplace_root
+
+
 def _run_codex(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Invoke the ``codex`` CLI with a hard timeout.
+
+    Args:
+        args: Argument list after ``codex`` (e.g. ``["features", "enable",
+            "plugin_hooks"]``).
+
+    Returns:
+        subprocess.CompletedProcess[str]: The completed run. On timeout,
+            returns a synthetic process with exit code 124 and a stderr
+            message identifying the hung command.
+    """
     command = ["codex", *args]
     try:
         return subprocess.run(
@@ -175,7 +263,151 @@ def _set_toml_feature(path: Path, feature: str, value: bool) -> bool:
     return True
 
 
+def _remove_toml_sections(
+    path: Path, *, exact: set[str], prefixes: tuple[str, ...] = ()
+) -> bool:
+    """Remove simple top-level TOML sections by section name.
+
+    Walks ``path`` line by line, dropping every line from a matching
+    ``[section]`` header through the next header. Intended for minimal
+    TOML files like ``~/.codex/config.toml``; nested array-of-tables
+    (``[[…]]``) and inline tables are not supported.
+
+    Args:
+        path: TOML file to rewrite. A missing file is treated as success.
+        exact: Section names to drop (e.g. ``"marketplaces.reflexioai"``).
+        prefixes: Section-name prefixes to drop (e.g.
+            ``("hooks.state.\"claude-smart@reflexioai:",)``).
+
+    Returns:
+        bool: ``True`` if the file is now consistent (including the
+            no-op case). ``False`` only if the file existed but could
+            not be read or written.
+    """
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError:
+        return False
+    if not text:
+        return True
+
+    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
+    changed = False
+    dropping = False
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        section_match = section_re.match(line)
+        if section_match:
+            name = section_match.group(1).strip()
+            dropping = name in exact or any(
+                name.startswith(prefix) for prefix in prefixes
+            )
+            changed = changed or dropping
+        if not dropping:
+            out.append(line)
+
+    if not changed:
+        return True
+    try:
+        path.write_text("".join(out))
+    except OSError:
+        return False
+    return True
+
+
+def _set_codex_plugin_enabled(path: Path) -> bool:
+    """Write Codex's installed-plugin config section for claude-smart."""
+    section_name = f'plugins."{_CODEX_PLUGIN_ID}"'
+    if not _remove_toml_sections(path, exact={section_name}):
+        return False
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError:
+        return False
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text.strip():
+        text += "\n"
+    text += f"[{section_name}]\nenabled = true\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    except OSError:
+        return False
+    return True
+
+
+def _codex_plugin_version(plugin_root: Path) -> str | None:
+    try:
+        manifest = json.loads(
+            (plugin_root / ".codex-plugin" / "plugin.json").read_text()
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = manifest.get("version")
+    return version if isinstance(version, str) and version else None
+
+
+def _install_codex_plugin_cache(plugin_root: Path) -> tuple[bool, str]:
+    """Best-effort local install equivalent to selecting Install in /plugins."""
+    version = _codex_plugin_version(plugin_root)
+    if not version:
+        return (
+            False,
+            f"missing version in {plugin_root / '.codex-plugin' / 'plugin.json'}",
+        )
+    cache_dir = _CODEX_PLUGIN_CACHE_DIR / version
+    try:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(plugin_root, cache_dir, symlinks=False, ignore=_COPYTREE_IGNORE)
+    except OSError as exc:
+        return False, f"could not write Codex plugin cache: {exc}"
+    if not _set_codex_plugin_enabled(_CODEX_CONFIG_PATH):
+        return False, f"could not enable {_CODEX_PLUGIN_ID} in {_CODEX_CONFIG_PATH}"
+    return True, f"installed Codex plugin cache at {cache_dir}"
+
+
+def _cleanup_codex_install_state() -> bool:
+    """Remove Codex's local install artifacts while preserving shared learning data.
+
+    Drops the ``[plugins."claude-smart@reflexioai"]`` /
+    ``[marketplaces.reflexioai]`` / ``[hooks.state."claude-smart@reflexioai:…"]``
+    sections from ``~/.codex/config.toml``, removes the marketplace
+    wrapper and the Codex-side plugin cache, and tries to clean the
+    parent cache directory if it is now empty. Shared
+    ``~/.reflexio/`` and ``~/.claude-smart/`` data, and Codex's global
+    ``plugin_hooks`` feature, are intentionally left in place.
+
+    Returns:
+        bool: ``True`` if the TOML rewrite succeeded (or no rewrite was
+            needed). Filesystem cleanup errors are swallowed.
+    """
+    ok = _remove_toml_sections(
+        _CODEX_CONFIG_PATH,
+        exact={
+            f'plugins."{_CODEX_PLUGIN_ID}"',
+            f"marketplaces.{_CODEX_MARKETPLACE_NAME}",
+        },
+        prefixes=(f'hooks.state."{_CODEX_PLUGIN_ID}:',),
+    )
+    shutil.rmtree(_CODEX_LOCAL_MARKETPLACE_ROOT, ignore_errors=True)
+    shutil.rmtree(_CODEX_PLUGIN_CACHE_DIR, ignore_errors=True)
+    try:
+        _CODEX_PLUGIN_CACHE_DIR.parent.rmdir()
+    except OSError:
+        pass
+    return ok
+
+
 def _enable_codex_plugin_hooks() -> tuple[bool, str]:
+    """Enable Codex's ``plugin_hooks`` feature, falling back to editing config.toml.
+
+    Returns:
+        tuple[bool, str]: ``(success, message)``. The message describes
+            either the successful path taken (CLI vs. direct config write)
+            or the failure mode.
+    """
     result = _run_codex(["features", "enable", "plugin_hooks"])
     if result.returncode == 0:
         return True, "codex features enable plugin_hooks"
@@ -187,6 +419,19 @@ def _enable_codex_plugin_hooks() -> tuple[bool, str]:
 
 
 def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
+    """Register ``root`` as a Codex marketplace, replacing a stale entry if needed.
+
+    On success runs ``plugin marketplace upgrade reflexioai`` to refresh
+    Codex's cache. On the "different source" error path, removes the
+    existing registration and retries once.
+
+    Args:
+        root: Local marketplace directory to register.
+
+    Returns:
+        tuple[bool, str]: ``(success, message)`` where the message
+            captures the path taken or the Codex CLI's error output.
+    """
     result = _run_codex(["plugin", "marketplace", "add", str(root)])
     if result.returncode == 0:
         upgrade = _run_codex(
@@ -207,7 +452,18 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
 
 
 def cmd_install_codex(_args: argparse.Namespace) -> int:
-    """Install the local claude-smart plugin marketplace for Codex."""
+    """Install the claude-smart plugin marketplace for Codex.
+
+    Only supported from a source checkout — the wheel ships the Python
+    package without the repo-level ``.agents/`` and top-level ``plugin/``
+    layout this command expects. End users install via the npm wrapper.
+
+    Args:
+        _args: Parsed CLI args (unused).
+
+    Returns:
+        int: 0 on success, non-zero on failure or unsupported runtime.
+    """
     if not shutil.which("codex"):
         sys.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n")
         return 1
@@ -219,9 +475,13 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
 
     missing = _missing_codex_marketplace_files(_REPO_ROOT)
     if missing:
-        formatted = ", ".join(str(path) for path in missing)
-        sys.stderr.write(f"error: Codex marketplace files missing: {formatted}\n")
+        sys.stderr.write(
+            "error: `claude-smart install --host codex` (Python path) only runs "
+            "from a source checkout. End users: `npx claude-smart install --host "
+            "codex` instead.\n"
+        )
         return 1
+    marketplace_root = _prepare_codex_local_marketplace()
 
     added = _seed_reflexio_env()
     if added:
@@ -233,29 +493,45 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
     else:
         sys.stderr.write(f"warning: could not enable Codex plugin hooks: {hooks_msg}\n")
 
-    registered, registration_msg = _register_codex_marketplace(_REPO_ROOT)
+    registered, registration_msg = _register_codex_marketplace(marketplace_root)
     if registered:
         sys.stdout.write(f"{registration_msg}.\n")
     else:
         sys.stderr.write(f"warning: {registration_msg}\n")
 
+    installed = False
+    install_msg = "marketplace registration failed"
     if registered:
+        installed, install_msg = _install_codex_plugin_cache(
+            marketplace_root / _CODEX_LOCAL_PLUGIN_PATH
+        )
+        if installed:
+            sys.stdout.write(f"{install_msg}.\n")
+        else:
+            sys.stderr.write(f"warning: {install_msg}\n")
+
+    if registered and installed:
         sys.stdout.write(
-            "\nclaude-smart Codex support is prepared.\n"
-            "Open Codex in this repo, run /plugins, install claude-smart from "
-            "the claude-smart (local) marketplace if it is not already installed, "
-            "then restart Codex so hooks reload. Uninstall removes the marketplace "
-            "registration but leaves shared claude-smart data and Codex's global "
-            "plugin_hooks feature intact.\n"
+            "\nclaude-smart Codex support is installed.\n"
+            "Restart Codex so the installed plugin and hooks reload. /plugins should "
+            f"show claude-smart as installed from the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
+            "Uninstall removes the plugin cache and marketplace registration but leaves "
+            "shared claude-smart data and Codex's global plugin_hooks feature intact.\n"
+        )
+    elif registered:
+        sys.stdout.write(
+            "\nclaude-smart Codex marketplace is prepared, but automatic plugin install failed.\n"
+            "Fully quit and reopen Codex in this repo, run /plugins, install claude-smart from "
+            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
         )
     else:
         sys.stdout.write(
             "\nCodex hooks enabled; marketplace registration failed.\n"
-            f"Install manually with `codex plugin marketplace add {_REPO_ROOT}`, "
-            "then open Codex, run /plugins, install claude-smart from the "
-            "claude-smart (local) marketplace, and restart Codex so hooks reload.\n"
+            f"Install manually with `codex plugin marketplace add {marketplace_root}`, "
+            "then fully quit and reopen Codex, run /plugins, install claude-smart from the "
+            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
         )
-    return 0 if hooks_ok and registered else 1
+    return 0 if hooks_ok and registered and installed else 1
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -367,8 +643,24 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
+    """Remove the Codex marketplace registration and local install state.
+
+    Runs ``codex plugin marketplace remove reflexioai`` (skipped when the
+    Codex CLI is absent) and then cleans the on-disk marketplace
+    wrapper, plugin cache, and the corresponding sections of
+    ``~/.codex/config.toml``. Shared learning data is preserved.
+
+    Args:
+        _args: Parsed CLI args (unused).
+
+    Returns:
+        int: 0 on success or partial cleanup; non-zero is reserved for
+            future failure modes — current paths swallow Codex CLI
+            errors and continue cleaning local state.
+    """
     if not shutil.which("codex"):
         sys.stdout.write("Codex CLI not found; skipping marketplace removal.\n")
+        _cleanup_codex_install_state()
         return 0
     result = _run_codex(["plugin", "marketplace", "remove", _CODEX_MARKETPLACE_NAME])
     if result.returncode != 0:
@@ -378,9 +670,10 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
             + (f": {output}" if output else "")
             + "\n"
         )
-        return 1
+    if not _cleanup_codex_install_state():
+        sys.stderr.write(f"warning: could not update {_CODEX_CONFIG_PATH}\n")
     sys.stdout.write(
-        "claude-smart Codex marketplace removed. Restart Codex to apply. "
+        "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply. "
         "Codex's global plugin_hooks feature and local data under ~/.reflexio "
         "and ~/.claude-smart were left in place.\n"
     )

@@ -1,7 +1,7 @@
 # Release automation for claude-smart.
 #
 # Usage:
-#   make bump VERSION=0.1.1          Update version in all 4 manifests
+#   make bump VERSION=0.1.1          Update version in all release manifests
 #   make release VERSION=0.1.1       Bump, commit, tag v0.1.1, publish, push
 #   make publish                     Publish current version to npm + PyPI
 #   make publish-npm                 npm publish only
@@ -18,8 +18,8 @@
         ensure-remote-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
-                 plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json \
-                 README.md
+                 plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
+                 .claude-plugin/marketplace.json README.md
 LOCK_FILES    := plugin/uv.lock
 PYPROJECT     := plugin/pyproject.toml
 
@@ -76,15 +76,16 @@ ensure-remote-reflexio: ## Ensure [tool.uv.sources] is commented out so publishe
 	  exit 1; \
 	fi
 
-bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in all 4 manifests
+bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in all release manifests
 	@echo "→ bumping to $(VERSION)"
 	@sed -i.bak -E 's/"version": "[^"]+"/"version": "$(VERSION)"/' \
-	    package.json plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json
+	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
+	    .claude-plugin/marketplace.json
 	@sed -i.bak -E 's/^version = "[^"]+"/version = "$(VERSION)"/' plugin/pyproject.toml
 	@sed -i.bak -E 's|badge/version-[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?-green\.svg|badge/version-$(VERSION)-green.svg|' README.md
 	@rm -f package.json.bak plugin/pyproject.toml.bak \
-	       plugin/.claude-plugin/plugin.json.bak .claude-plugin/marketplace.json.bak \
-	       README.md.bak
+	       plugin/.claude-plugin/plugin.json.bak plugin/.codex-plugin/plugin.json.bak \
+	       .claude-plugin/marketplace.json.bak README.md.bak
 	@echo "→ refreshing uv lockfile (resolves reflexio-ai from PyPI)"
 	@uv lock --refresh-package reflexio-ai --project plugin
 	@echo "→ resulting versions:"

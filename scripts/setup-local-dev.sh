@@ -11,7 +11,7 @@
 #   4. `uv sync` from plugin/.
 #   5. Append CLAUDE_SMART_USE_LOCAL_CLI=1 / _USE_LOCAL_EMBEDDING=1 to
 #      ~/.reflexio/.env so reflexio runs without any external API key.
-#   6. Register the local marketplace with Claude Code (user scope) so
+#   6. Prepare and register the local marketplace with Claude Code (user scope) so
 #      `claude-smart@reflexioai-local` is available everywhere.
 #   7. Wire this repo's .claude/settings.local.json to enable the local
 #      plugin and shadow the remote one for this project.
@@ -67,15 +67,28 @@ if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
   log "appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV"
 fi
 
-# Register the local marketplace with Claude Code (user-scope). We use
-# the local-marketplace/ subdir because its manifest declares
-# name=reflexioai-local — distinct from the remote `reflexioai`, so both
-# can coexist in Claude Code's marketplace list.
+# Prepare and register the local marketplace with Claude Code (user-scope).
+# local-marketplace/ is gitignored because it contains a symlink to this
+# checkout's plugin/ directory. Its manifest declares name=reflexioai-local —
+# distinct from the remote `reflexioai`, so both can coexist in Claude Code's
+# marketplace list.
 LOCAL_MKT_DIR="$REPO_ROOT/local-marketplace"
-if [ ! -f "$LOCAL_MKT_DIR/.claude-plugin/marketplace.json" ]; then
-  log "ERROR: expected marketplace manifest at $LOCAL_MKT_DIR/.claude-plugin/marketplace.json"
-  exit 1
-fi
+log "preparing local marketplace at $LOCAL_MKT_DIR..."
+mkdir -p "$LOCAL_MKT_DIR/.claude-plugin"
+python3 - "$REPO_ROOT/.claude-plugin/marketplace.json" "$LOCAL_MKT_DIR/.claude-plugin/marketplace.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+data = json.loads(src.read_text())
+data["name"] = "reflexioai-local"
+data["plugins"][0]["source"] = "./plugin"
+dst.write_text(json.dumps(data, indent=2) + "\n")
+PY
+rm -rf "$LOCAL_MKT_DIR/plugin"
+ln -sfn "$PLUGIN_ROOT" "$LOCAL_MKT_DIR/plugin"
 
 if command -v claude >/dev/null 2>&1; then
   log "registering local marketplace with Claude Code..."

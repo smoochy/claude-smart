@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "description": "Self-improving Claude Code plugin — learns from corrections via reflexio",
   "keywords": [
     "claude",
@@ -27,6 +27,16 @@
   },
   "files": [
     "bin",
+    ".agents/plugins/marketplace.json",
+    "plugin",
+    "!plugin/**/__pycache__",
+    "!plugin/**/*.py[cod]",
+    "!plugin/**/.pytest_cache",
+    "!plugin/**/.ruff_cache",
+    "!plugin/**/.mypy_cache",
+    "!plugin/**/.venv",
+    "!plugin/**/node_modules",
+    "!plugin/**/.next/cache",
     "README.md",
     "LICENSE"
   ],
