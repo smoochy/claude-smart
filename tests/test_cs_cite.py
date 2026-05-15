@@ -196,6 +196,36 @@ def test_ensure_installed_refreshes_stale_executable(tmp_path, monkeypatch) -> N
     assert target.stat().st_mode & stat.S_IXUSR
 
 
+def test_ensure_installed_removes_legacy_copy(tmp_path, monkeypatch) -> None:
+    """A successful install removes the legacy ``~/.claude-smart/bin`` copy."""
+    monkeypatch.setattr(cs_cite, "_INSTALL_DIR", tmp_path / "bin")
+    monkeypatch.setattr(cs_cite, "INSTALL_PATH", tmp_path / "bin" / "cs-cite")
+    legacy = tmp_path / "legacy" / "cs-cite"
+    legacy.parent.mkdir()
+    legacy.write_text("#!/bin/sh\nexit 0\n")
+    legacy.chmod(0o755)
+    monkeypatch.setattr(cs_cite, "_LEGACY_INSTALL_PATH", legacy)
+
+    cs_cite.ensure_installed()
+
+    assert (tmp_path / "bin" / "cs-cite").is_file()
+    assert not legacy.exists()
+
+
+def test_ensure_installed_tolerates_missing_legacy_copy(tmp_path, monkeypatch) -> None:
+    """Legacy cleanup is best-effort: no legacy file means a silent no-op."""
+    monkeypatch.setattr(cs_cite, "_INSTALL_DIR", tmp_path / "bin")
+    monkeypatch.setattr(cs_cite, "INSTALL_PATH", tmp_path / "bin" / "cs-cite")
+    monkeypatch.setattr(
+        cs_cite, "_LEGACY_INSTALL_PATH", tmp_path / "nonexistent" / "cs-cite"
+    )
+
+    # Must not raise even though the legacy path does not exist.
+    cs_cite.ensure_installed()
+
+    assert (tmp_path / "bin" / "cs-cite").is_file()
+
+
 def test_ensure_installed_tolerates_readonly_target_parent(
     tmp_path, monkeypatch
 ) -> None:

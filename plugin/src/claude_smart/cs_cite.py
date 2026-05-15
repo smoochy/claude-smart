@@ -57,6 +57,10 @@ _SOURCE_SCRIPT = _PLUGIN_ROOT / "bin" / "cs-cite"
 # out of the box — no shell-init edits required.
 _INSTALL_DIR = Path.home() / ".local" / "bin"
 INSTALL_PATH = _INSTALL_DIR / "cs-cite"
+# Legacy install location from versions that wrote to ``~/.claude-smart/bin``.
+# Cleaned up on first successful install at the new path so a stale copy
+# earlier on PATH doesn't shadow the active script.
+_LEGACY_INSTALL_PATH = Path.home() / ".claude-smart" / "bin" / "cs-cite"
 
 _FINGERPRINT_LEN = 4
 
@@ -236,6 +240,25 @@ def ensure_installed() -> Path:
             shutil.copy2(_SOURCE_SCRIPT, INSTALL_PATH)
             mode = INSTALL_PATH.stat().st_mode
             INSTALL_PATH.chmod(mode | stat_.S_IXUSR | stat_.S_IXGRP | stat_.S_IXOTH)
+            _remove_legacy_install()
     except OSError as exc:
         _LOGGER.debug("cs-cite install failed: %s", exc)
     return INSTALL_PATH
+
+
+def _remove_legacy_install() -> None:
+    """Remove the legacy ``~/.claude-smart/bin/cs-cite`` script if present.
+
+    Called only after a successful install at the new ``~/.local/bin``
+    path so a user who had previously added the old directory to PATH
+    (ahead of ``~/.local/bin``) won't keep invoking the stale copy.
+    Failure is logged at DEBUG and otherwise ignored — citation injection
+    must never abort because of a stray legacy file.
+
+    Returns:
+        None
+    """
+    try:
+        _LEGACY_INSTALL_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        _LOGGER.debug("legacy cs-cite cleanup skipped: %s", exc)
