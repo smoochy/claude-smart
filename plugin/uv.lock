@@ -419,7 +419,7 @@ wheels = [
 
 [[package]]
 name = "claude-smart"
-version = "0.2.24"
+version = "0.2.25"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
