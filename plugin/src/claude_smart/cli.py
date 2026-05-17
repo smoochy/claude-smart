@@ -69,6 +69,8 @@ _DASHBOARD_DIR = _PLUGIN_ROOT / "dashboard"
 _BACKEND_SCRIPT = _SCRIPTS_DIR / "backend-service.sh"
 _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
 _REFLEXIO_DIR = Path.home() / ".reflexio"
+_STATE_DIR = Path.home() / ".claude-smart"
+_INSTALL_FAILURE_MARKER = _STATE_DIR / "install-failed"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
@@ -126,6 +128,86 @@ def _seed_reflexio_env() -> list[str]:
     with _REFLEXIO_ENV_PATH.open("a") as fh:
         fh.write(prefix + "\n".join(f"{f}=1" for f in missing) + "\n")
     return missing
+
+
+def _find_claude_code_plugin_root() -> Path | None:
+    """Locate the installed Claude Code plugin root after native install."""
+    cache_root = (
+        Path.home()
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / _CODEX_MARKETPLACE_NAME
+        / "claude-smart"
+    )
+    candidates: list[Path] = []
+    if cache_root.is_dir():
+        for child in cache_root.iterdir():
+            if (
+                child.is_dir()
+                and (child / "pyproject.toml").is_file()
+                and (child / "scripts" / "smart-install.sh").is_file()
+            ):
+                candidates.append(child)
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    candidates.extend(
+        [
+            Path.home()
+            / ".claude"
+            / "plugins"
+            / "marketplaces"
+            / _CODEX_MARKETPLACE_NAME
+            / "plugin",
+            _PLUGIN_ROOT,
+        ]
+    )
+    for candidate in candidates:
+        if (
+            (candidate / "pyproject.toml").is_file()
+            and (candidate / "scripts" / "smart-install.sh").is_file()
+        ):
+            return candidate
+    return None
+
+
+def _force_plugin_root(plugin_root: Path) -> None:
+    """Point ~/.reflexio/plugin-root at the installed plugin root."""
+    _REFLEXIO_DIR.mkdir(parents=True, exist_ok=True)
+    link = _REFLEXIO_DIR / "plugin-root"
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    elif link.exists():
+        raise OSError(f"refusing to replace non-symlink plugin-root at {link}")
+    try:
+        link.symlink_to(plugin_root, target_is_directory=True)
+    except OSError:
+        if link.exists():
+            raise
+        (_REFLEXIO_DIR / "plugin-root.txt").write_text(f"{plugin_root}\n")
+
+
+def _bootstrap_claude_code_install() -> tuple[bool, str]:
+    """Run smart-install immediately for the installed Claude Code plugin."""
+    plugin_root = _find_claude_code_plugin_root()
+    if plugin_root is None:
+        return False, "could not locate installed Claude Code plugin root after install"
+    try:
+        _force_plugin_root(plugin_root)
+    except OSError as exc:
+        return False, str(exc)
+    bash = shutil.which("bash")
+    if not bash:
+        return False, "bash is required to bootstrap claude-smart dependencies"
+    result = subprocess.run(
+        [bash, str(plugin_root / "scripts" / "smart-install.sh")],
+        cwd=plugin_root,
+    )
+    if result.returncode != 0:
+        return False, f"smart-install.sh failed in {plugin_root}"
+    if _INSTALL_FAILURE_MARKER.is_file():
+        reason = _INSTALL_FAILURE_MARKER.read_text().strip() or "unknown error"
+        return False, reason
+    return True, str(plugin_root)
 
 
 def _missing_codex_marketplace_files(root: Path) -> list[Path]:
@@ -792,7 +874,21 @@ def cmd_install(args: argparse.Namespace) -> int:
     if added:
         sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
 
-    sys.stdout.write("\nclaude-smart installed. Restart Claude Code in your project.\n")
+    bootstrapped, message = _bootstrap_claude_code_install()
+    if not bootstrapped:
+        sys.stderr.write(
+            f"error: claude-smart installed, but dependency bootstrap failed: {message}\n"
+        )
+        sys.stderr.write(
+            "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n"
+        )
+        return 1
+    sys.stdout.write(f"Prepared claude-smart runtime at {message}.\n")
+
+    sys.stdout.write(
+        "\nclaude-smart installed and dependencies are prepared. "
+        "Restart Claude Code in your project.\n"
+    )
     return 0
 
 

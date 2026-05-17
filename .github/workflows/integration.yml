@@ -12,6 +12,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-platforms:
+    name: dependency platforms (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Check Python dependency lock
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ "$(uname -m)" != "arm64" ]; then
+              echo "::warning::Skipping macOS runtime sync check because this runner is not Apple Silicon"
+              exit 0
+            fi
+            uv sync --project plugin --locked --dry-run --python 3.12
+          else
+            uv sync --project plugin --locked --dry-run --python 3.12 --python-platform x86_64-pc-windows-msvc
+          fi
+
+      - name: Check dashboard build
+        shell: bash
+        run: |
+          cd plugin/dashboard
+          npm ci
+          npm run build
+
   integration:
     name: integration (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}

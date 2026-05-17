@@ -20,16 +20,119 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 MARKER_DIR="$HOME/.claude-smart"
 FAILURE_MARKER="$MARKER_DIR/install-failed"
+SUCCESS_MARKER="$MARKER_DIR/install-complete"
+INSTALL_LOCK="$MARKER_DIR/install.lock"
 mkdir -p "$MARKER_DIR"
+
+# Serialize concurrent installer runs (SessionStart hook + slash-command
+# self-heal can both invoke this script). Wait for the active installer
+# rather than returning early, otherwise callers can re-check uv before
+# the first install has finished and report a false missing-dependency error.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$INSTALL_LOCK"
+  if ! flock 9; then
+    echo "[claude-smart] install lock failed; continuing without serialization" >&2
+    echo '{"continue":true,"suppressOutput":true}'
+    exit 0
+  fi
+fi
+
 rm -f "$FAILURE_MARKER"
 
 write_failure() {
   local reason
   reason="$1"
   printf '%s\n' "$reason" > "$FAILURE_MARKER"
+  rm -f "$SUCCESS_MARKER"
   echo "[claude-smart] install failed: $reason" >&2
   echo '{"continue":true,"suppressOutput":true}'
   exit 0
+}
+
+fingerprint_file() {
+  local path
+  path="$1"
+  if [ -f "$path" ]; then
+    cksum "$path" 2>/dev/null | awk '{print $1 ":" $2}'
+  else
+    printf 'missing\n'
+  fi
+}
+
+install_fingerprint() {
+  printf 'plugin_root=%s\n' "$PLUGIN_ROOT"
+  printf 'smart_install=%s\n' "$(fingerprint_file "$HERE/smart-install.sh")"
+  printf 'pyproject=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/pyproject.toml")"
+  printf 'uv_lock=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/uv.lock")"
+  # Resolved python interpreter — catches a system upgrade (3.12.4 → 3.12.5)
+  # that would otherwise let install_complete return true against a venv
+  # built against a now-deleted interpreter.
+  if command -v uv >/dev/null 2>&1; then
+    printf 'python=%s\n' "$(uv python find 3.12 2>/dev/null || echo missing)"
+  else
+    printf 'python=no-uv\n'
+  fi
+  if [ -d "$PLUGIN_ROOT/dashboard" ]; then
+    printf 'dashboard_pkg=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/dashboard/package.json")"
+    printf 'dashboard_lock=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/dashboard/package-lock.json")"
+  else
+    printf 'dashboard_pkg=none\n'
+    printf 'dashboard_lock=none\n'
+  fi
+}
+
+install_complete() {
+  [ -f "$SUCCESS_MARKER" ] || return 1
+  [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
+  command -v uv >/dev/null 2>&1 || return 1
+  [ -d "$PLUGIN_ROOT/.venv" ] || return 1
+  [ -f "$HOME/.reflexio/.env" ] || return 1
+  grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
+  grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
+  if [ -d "$PLUGIN_ROOT/dashboard" ]; then
+    [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
+  fi
+  return 0
+}
+
+write_success_marker() {
+  install_fingerprint > "$SUCCESS_MARKER"
+}
+
+preflight_supported_runtime_platform() {
+  local os_name machine darwin_major
+  os_name="$(uname -s 2>/dev/null || echo unknown)"
+  machine="$(uname -m 2>/dev/null || echo unknown)"
+  case "$os_name" in
+    Darwin*)
+      if [ "$machine" != "arm64" ]; then
+        write_failure "claude-smart currently supports Apple Silicon macOS 14+ only; Intel Mac is not supported because native ML wheels are unavailable."
+      fi
+      darwin_major="$(uname -r 2>/dev/null | awk -F. '{print $1}')"
+      case "$darwin_major" in
+        ''|*[!0-9]*)
+          write_failure "claude-smart could not determine the macOS version; Apple Silicon macOS 14+ is required."
+          ;;
+      esac
+      if [ "$darwin_major" -lt 23 ]; then
+        write_failure "claude-smart currently supports macOS 14+ on Apple Silicon; macOS 13 and older are not supported because native ML wheels are unavailable."
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      case "$machine" in
+        x86_64|amd64) : ;;
+        *)
+          write_failure "claude-smart currently supports Windows x64 only; Windows ARM is not supported because native ML wheels are unavailable."
+          ;;
+      esac
+      ;;
+    Linux*)
+      : # Existing Linux installs remain supported when package wheels are available.
+      ;;
+    *)
+      write_failure "claude-smart currently supports Apple Silicon macOS 14+, Windows x64, and Linux for vanilla installs."
+      ;;
+  esac
 }
 
 install_private_node() {
@@ -236,6 +339,13 @@ if [ "${CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY:-}" = "1" ]; then
   exit $?
 fi
 
+preflight_supported_runtime_platform
+
+if install_complete; then
+  echo '{"continue":true,"suppressOutput":true}'
+  exit 0
+fi
+
 # Dev-mode only: when running from a git checkout, pull the reflexio
 # submodule so tests/benchmarks can use its sources. In install mode the
 # plugin lives under ~/.claude/plugins/cache and reflexio-ai resolves
@@ -381,5 +491,6 @@ if ! bash "$HERE/ensure-plugin-root.sh" "$PLUGIN_ROOT"; then
   echo "[claude-smart] WARNING: failed to set ~/.reflexio/plugin-root symlink — slash commands may not resolve" >&2
 fi
 
+write_success_marker
 echo "[claude-smart] install complete. Backend and dashboard auto-start on session start." >&2
 echo '{"continue":true,"suppressOutput":true}'

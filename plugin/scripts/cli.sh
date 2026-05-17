@@ -32,9 +32,33 @@ if [ -f "$FAILURE_MARKER" ]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  echo "claude-smart: 'uv' not found on PATH." >&2
-  echo "Install it from https://docs.astral.sh/uv/ or restart Claude Code so the Setup hook can install it." >&2
-  exit 1
+  # Self-heal: the Setup/SessionStart hook may have been skipped (trust
+  # prompt declined, plugin enabled mid-session, etc.) leaving the install
+  # half-done. Run smart-install.sh inline so the user does not have to
+  # restart Claude Code just to recover.
+  # Guard against recursion: if smart-install.sh ever shells back through
+  # this wrapper (e.g. a future migration step) we must not loop forever.
+  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
+    echo "claude-smart: bootstrap recursion detected; aborting." >&2
+    exit 1
+  fi
+  if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+    echo "claude-smart: 'uv' not found — bootstrapping dependencies (~1-3 min on first install)..." >&2
+    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
+    claude_smart_prepend_astral_bins
+    claude_smart_prepend_node_bins
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    if [ -f "$FAILURE_MARKER" ]; then
+      msg="$(cat "$FAILURE_MARKER" 2>/dev/null || echo "unknown error")"
+      echo "claude-smart: install failed: $msg" >&2
+      echo "Fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
+    else
+      echo "claude-smart: 'uv' not found on PATH after bootstrap attempt." >&2
+      echo "Install it from https://docs.astral.sh/uv/ or rerun $PLUGIN_ROOT/scripts/smart-install.sh manually." >&2
+    fi
+    exit 1
+  fi
 fi
 
 exec uv run --project "$PLUGIN_ROOT" --quiet python -m claude_smart.cli "$@"

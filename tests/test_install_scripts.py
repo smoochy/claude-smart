@@ -20,6 +20,7 @@ SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
+NODE_INSTALLER = REPO_ROOT / "bin" / "claude-smart.js"
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -225,6 +226,196 @@ def test_backend_service_uses_capped_logging() -> None:
     assert "claude_smart_append_capped_log" in service
     assert '>>"$LOG_FILE" 2>&1' not in service
     assert '>>"$LOG_FILE"' not in service
+
+
+def test_smart_install_waits_on_existing_lock() -> None:
+    script = SMART_INSTALL.read_text()
+
+    assert "flock -n" not in script
+    assert "flock 9" in script
+
+
+def test_claude_code_install_hook_matches_session_start_modes() -> None:
+    hooks = json.loads((REPO_ROOT / "plugin" / "hooks" / "hooks.json").read_text())
+    install_block = hooks["hooks"]["SessionStart"][0]
+    runtime_block = hooks["hooks"]["SessionStart"][1]
+
+    assert install_block["matcher"] == runtime_block["matcher"]
+    assert install_block["matcher"] == "startup|clear|compact|resume"
+    assert "smart-install.sh" in install_block["hooks"][0]["command"]
+
+
+def test_node_installer_platform_preflight_messages() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "console.log(installer.platformSupportError() || 'ok');"
+    )
+    cases = [
+        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "arm64", "CLAUDE_SMART_TEST_RELEASE": "23.0.0"}, "ok"),
+        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "x64", "CLAUDE_SMART_TEST_RELEASE": "23.0.0"}, "Intel Mac is not supported"),
+        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "arm64", "CLAUDE_SMART_TEST_RELEASE": "22.6.0"}, "macOS 13 and older are not supported"),
+        ({"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "arm64"}, "Windows ARM is not supported"),
+        ({"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "x64"}, "ok"),
+    ]
+    for overrides, expected in cases:
+        env = os.environ.copy()
+        env.update(overrides)
+        result = subprocess.run(
+            [node, "-e", script],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert expected in result.stdout.strip()
+
+
+def test_node_installer_does_not_treat_global_node_as_private_runtime(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    home = tmp_path / "home"
+    global_bin = tmp_path / "global-bin"
+    global_bin.mkdir(parents=True)
+    for name in ("node", "npm"):
+        executable = global_bin / name
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "installer.ensurePrivateNode()"
+        ".then(() => { console.error('unexpected success'); process.exit(1); })"
+        ".catch((err) => { console.log(err.message); });"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": str(global_bin),
+            "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+        }
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Intel Mac is not supported" in result.stdout
+
+
+def test_node_installer_bootstraps_runtime_with_private_node_and_uv(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    home = tmp_path / "home"
+    plugin_root = tmp_path / "plugin"
+    dashboard = plugin_root / "dashboard"
+    hooks = plugin_root / "hooks"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    dashboard.mkdir(parents=True)
+    hooks.mkdir(parents=True)
+    private_node.mkdir(parents=True)
+    uv_bin.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    # Use realistic command fixtures so the content-based patcher in
+    # patchCodexHooksForNode can dispatch by script name. The install hook
+    # at index 0 must survive patching because it has to run as bash.
+    (hooks / "codex-hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {"command": 'bash "$_R/scripts/smart-install.sh"'},
+                                {"command": 'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'},
+                                {"command": 'bash "$_R/scripts/backend-service.sh" start'},
+                                {"command": 'bash "$_R/scripts/dashboard-service.sh" start'},
+                                {"command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'},
+                            ]
+                        }
+                    ],
+                    "UserPromptSubmit": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex user-prompt'}]}],
+                    "PostToolUse": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex post-tool'}]}],
+                    "Stop": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex stop'}]}],
+                }
+            }
+        )
+        + "\n"
+    )
+    (private_node / "node").write_text("#!/bin/sh\nexit 0\n")
+    (private_node / "npm").write_text(
+        "#!/bin/sh\nprintf 'npm %s\\n' \"$*\" >> \"$HOME/npm.log\"\nexit 0\n"
+    )
+    (uv_bin / "uv").write_text(
+        "#!/bin/sh\nprintf 'uv %s\\n' \"$*\" >> \"$HOME/uv.log\"\nexit 0\n"
+    )
+    for executable in [private_node / "node", private_node / "npm", uv_bin / "uv"]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
+        ".then(() => console.log('done')).catch((err) => { console.error(err.message); process.exit(1); });"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+            "CLAUDE_SMART_TEST_ARCH": "arm64",
+            "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+        }
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "done" in result.stdout
+    assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
+    npm_log = (home / "npm.log").read_text()
+    assert "npm ci" in npm_log
+    assert "npm run build" in npm_log
+    parsed = json.loads((hooks / "codex-hooks.json").read_text())
+    session_hooks = parsed["hooks"]["SessionStart"][0]["hooks"]
+    # Index 0 is smart-install.sh — must run as bash, not through node.
+    install_cmd = session_hooks[0]["command"]
+    assert "smart-install.sh" in install_cmd
+    assert "codex-hook.js" not in install_cmd
+    # Indices 1-4 dispatch to node by command content. Verify each maps to
+    # the right codex-hook.js subcommand and references the private node.
+    # Each arg is independently shell-quoted, so the sub-event appears as
+    # `"hook" "session-start"` rather than `hook session-start`.
+    expected_subs = [["ensure-root"], ["backend"], ["dashboard"], ["hook", "session-start"]]
+    for idx, sub_tokens in enumerate(expected_subs, start=1):
+        cmd = session_hooks[idx]["command"]
+        assert str(private_node / "node") in cmd, f"index {idx}: {cmd}"
+        assert "codex-hook.js" in cmd, f"index {idx}: {cmd}"
+        for token in sub_tokens:
+            assert f'"{token}"' in cmd, f"index {idx} expected token {token!r}: {cmd}"
+    user_prompt_cmd = parsed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert '"hook"' in user_prompt_cmd and '"user-prompt"' in user_prompt_cmd
 
 
 def test_resolve_npm_accepts_windows_cmd_shim(tmp_path: Path) -> None:
