@@ -98,6 +98,8 @@ claude plugin install claude-smart@reflexioai
 The plugin Setup hook installs its own `uv`, Python 3.12 environment, and
 private Node.js/npm runtime under `~/.claude-smart/` when they are missing, so
 you do not need to install Python or Node globally for the plugin/dashboard.
+On native Windows, Claude Code hooks still need a Git Bash-compatible `bash`
+until Claude Code exposes a single cross-platform hook command shape.
 
 To uninstall:
 
@@ -121,6 +123,11 @@ Then fully quit and reopen Codex so hooks reload.
 
 Requires the `codex` CLI on `PATH` and Node.js (for `npx`).
 
+The `npx` command needs Node.js only to launch the installer. The installed
+plugin uses a private Node.js/npm runtime and a `uv`-managed Python 3.12
+environment under `~/.claude-smart/`, so hooks and the dashboard do not depend
+on global Python, uv, Node, or npm after install.
+
 To uninstall:
 
 ```bash
@@ -132,6 +139,19 @@ Restart Codex after uninstalling. Learned data under `~/.reflexio/` and `~/.clau
 Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally) for what the installer does, manual toggles via `/plugins`, and clone-based development.
 
 > **Not supported:** Claude Code Cowork, claude.ai/code web, or remote Codex environments without local plugin hooks — they run outside your local machine, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
+
+### Vanilla OS support
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Apple Silicon macOS 14+ | Supported | Runtime bootstrap installs private Node/npm, uv, Python 3.12 deps, and dashboard deps. |
+| Windows x64 | Supported | Runtime bootstrap uses PowerShell for uv/Node archive extraction and patches Codex hooks to the Node wrapper. |
+| Linux | Supported when host hooks are local | Existing Linux behavior is preserved; install coverage depends on available Python wheels. |
+| Intel Mac, macOS 13 or older, Windows ARM | Not supported | Current local embedding/ML dependencies do not publish a complete native wheel set for these targets. |
+
+Network access is required during first install for npm, PyPI/uv, Node.js, and
+the first local embedding model download. The ONNX model cache lives at
+`~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/`.
 
 ---
 
@@ -216,6 +236,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Claude Code slash commands and Codex shell-command helpers resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
+| `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |
 | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` | Cached ONNX weights (~86 MB, downloaded once). Delete to force a re-download. |
 
 For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).

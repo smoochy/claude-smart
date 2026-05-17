@@ -29,6 +29,8 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper or `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
+| `CLAUDE_SMART_NODE_LTS_MAJOR` | `22` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |
+| `CLAUDE_SMART_NODE_BASE_URL` | `https://nodejs.org/dist/latest-v${CLAUDE_SMART_NODE_LTS_MAJOR}.x` | Override the Node.js download base URL for tests, mirrors, or recovery. |
 | `CLAUDE_SMART_BACKEND_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the reflexio backend on `localhost:8071`. |
 | `CLAUDE_SMART_DASHBOARD_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the Next.js dashboard on `localhost:3001`. |
 | `CLAUDE_SMART_BACKEND_STOP_ON_END` | `0` | Set to `1` to tear down the backend at `SessionEnd` instead of leaving it long-lived. |
@@ -40,6 +42,42 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 claude-smart uses an in-process ONNX embedder (Chroma's `all-MiniLM-L6-v2`, 384-dim, zero-padded to reflexio's 512-dim schema). The model weights are downloaded on first use (~80 MB, cached under `~/.cache/chroma/onnx_models/`) — after that, no network calls for embedding. Runtime cost is a few milliseconds per short document on CPU.
 
 If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain.
+
+## Install dependency policy
+
+Vanilla install support means the user has installed the host (`claude` or
+`codex`) and the chosen installer runner (`npx` needs Node, `uvx` needs uv), but
+does not need global Python, uv, Node/npm for plugin runtime, npm packages, or
+embedding model files. The plugin bootstraps runtime dependencies into user
+state:
+
+| Dependency | Installed/managed by | Location |
+| --- | --- | --- |
+| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv` |
+| Runtime uv | installer if missing | `~/.local/bin` or `~/.cargo/bin` |
+| Runtime Node.js/npm | installer if missing | `~/.claude-smart/node/current` |
+| Dashboard packages/build | installer or first dashboard start | `plugin/dashboard/node_modules`, `plugin/dashboard/.next` |
+| Local embedding model | Chroma/ONNX on first use | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` |
+
+Supported native vanilla targets are Apple Silicon macOS 14+ and Windows x64;
+Linux remains supported when host hooks run locally and wheels are available.
+Intel Mac, macOS 13 or older, and Windows ARM should fail before dependency sync
+with a visible unsupported-platform message because the current ML dependency
+stack does not publish a complete native wheel set for those targets.
+
+When changing dependencies, verify:
+
+```bash
+uv sync --project plugin --locked --dry-run --python 3.12 --python-platform x86_64-pc-windows-msvc
+uv sync --project plugin --locked --dry-run --python 3.12
+cd plugin/dashboard && npm ci && npm run build
+```
+
+Also check the published package surface:
+
+```bash
+npm pack --dry-run --json
+```
 
 ## Public terminology and storage names
 
@@ -189,7 +227,7 @@ Before running `make release`:
   ```bash
   cd reflexio && git pull && cd .. && git add reflexio && git commit -m "Bump reflexio submodule"
   ```
-- [ ] `npm publish --dry-run` tarball is still ~13 KB / 4 files — if it's larger, `files` in `package.json` is letting extra content through.
+- [ ] `npm pack --dry-run --json` includes the root wrapper, marketplace metadata, plugin payload, dashboard sources, README, and LICENSE, and excludes `.venv`, `node_modules`, `.next/cache`, and Python caches.
 - [ ] If you touched `pyproject.toml` dependencies, `uv build` succeeds locally and the wheel's `METADATA` doesn't carry a `file://` path dep (common failure when `[tool.uv.sources]` leaks into the published wheel).
 
 ## Common failures and fixes
@@ -296,6 +334,8 @@ uv run --project plugin claude-smart install --host codex
 ```
 
 Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries.
+
+The packaged Node installer path (`node bin/claude-smart.js install --host codex`, or published `npx claude-smart install --host codex`) additionally bootstraps private Node/npm plus the uv-managed Python runtime, builds the dashboard, and patches Codex hooks to the Node wrapper. The Python `uv run` path is intentionally for local development from an already-prepared checkout.
 
 If you install or toggle `claude-smart` manually from `/plugins`, rerun `npx claude-smart install --host codex` (or the `uv run` equivalent) once afterward so the hook feature flags, plugin cache, and claude-smart hook trust state are re-prepared.
 

@@ -17,13 +17,18 @@ const {
   appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } = require("fs");
 const https = require("https");
-const { homedir, tmpdir } = require("os");
+const { arch, homedir, platform, release, tmpdir } = require("os");
 const { dirname, join } = require("path");
 
 const DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart";
@@ -32,6 +37,8 @@ const CODEX_MARKETPLACE_NAME = "reflexioai";
 const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const REFLEXIO_DIR = join(homedir(), ".reflexio");
+const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
 const PACKAGE_ROOT = dirname(dirname(__filename));
 const CODEX_MARKETPLACE_DIR = join(
@@ -193,8 +200,132 @@ function seedReflexioEnv() {
   return missing;
 }
 
+function findClaudeCodePluginRoot() {
+  const cacheRoot = join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
+  const candidates = [];
+  try {
+    for (const entry of readdirSync(cacheRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = join(cacheRoot, entry.name);
+      if (
+        existsSync(join(candidate, "pyproject.toml")) &&
+        existsSync(join(candidate, "scripts", "smart-install.sh"))
+      ) {
+        candidates.push(candidate);
+      }
+    }
+  } catch {
+    // Fall through to marketplace/package fallbacks.
+  }
+  candidates.sort((a, b) => {
+    try {
+      return statSync(b).mtimeMs - statSync(a).mtimeMs;
+    } catch {
+      return 0;
+    }
+  });
+  const fallbacks = [
+    join(homedir(), ".claude", "plugins", "marketplaces", CODEX_MARKETPLACE_NAME, "plugin"),
+    join(PACKAGE_ROOT, "plugin"),
+  ];
+  for (const candidate of [...candidates, ...fallbacks]) {
+    if (
+      existsSync(join(candidate, "pyproject.toml")) &&
+      existsSync(join(candidate, "scripts", "smart-install.sh"))
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function forcePluginRoot(pluginRoot) {
+  mkdirSync(REFLEXIO_DIR, { recursive: true });
+  const link = join(REFLEXIO_DIR, "plugin-root");
+  try {
+    const existing = lstatSync(link);
+    if (existing.isSymbolicLink() || existing.isFile()) {
+      rmSync(link, { force: true });
+    } else {
+      throw new Error(`refusing to replace non-symlink plugin-root at ${link}`);
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") throw err;
+  }
+  try {
+    // Use a symlink when possible so slash commands follow the active plugin root.
+    symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
+  } catch {
+    writeFileSync(join(REFLEXIO_DIR, "plugin-root.txt"), `${pluginRoot}\n`);
+  }
+}
+
+async function bootstrapClaudeCodeInstall() {
+  const pluginRoot = findClaudeCodePluginRoot();
+  if (!pluginRoot) {
+    throw new Error("could not locate installed Claude Code plugin root after install");
+  }
+  forcePluginRoot(pluginRoot);
+  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
+  if (!bash) {
+    throw new Error("bash is required to bootstrap claude-smart dependencies");
+  }
+  const code = await runChecked(bash, [join(pluginRoot, "scripts", "smart-install.sh")], {
+    cwd: pluginRoot,
+  });
+  if (code !== 0) {
+    throw new Error(`smart-install.sh failed in ${pluginRoot}`);
+  }
+  const failureMarker = join(CLAUDE_SMART_STATE_DIR, "install-failed");
+  if (existsSync(failureMarker)) {
+    const reason = readFileSync(failureMarker, "utf8").trim() || "unknown error";
+    throw new Error(reason);
+  }
+  return pluginRoot;
+}
+
 function isWindows() {
-  return process.platform === "win32";
+  return currentPlatform() === "win32";
+}
+
+function currentPlatform() {
+  return process.env.CLAUDE_SMART_TEST_PLATFORM || platform();
+}
+
+function currentArch() {
+  return process.env.CLAUDE_SMART_TEST_ARCH || arch();
+}
+
+function currentRelease() {
+  return process.env.CLAUDE_SMART_TEST_RELEASE || release();
+}
+
+function platformSupportError() {
+  const os = currentPlatform();
+  const cpu = currentArch();
+  if (os === "darwin") {
+    if (cpu !== "arm64") {
+      return "claude-smart currently supports Apple Silicon macOS 14+ only; Intel Mac is not supported because native ML wheels are unavailable.";
+    }
+    const darwinMajor = Number.parseInt(currentRelease().split(".")[0] || "0", 10);
+    if (!Number.isFinite(darwinMajor) || darwinMajor < 23) {
+      return "claude-smart currently supports macOS 14+ on Apple Silicon; macOS 13 and older are not supported because native ML wheels are unavailable.";
+    }
+    return null;
+  }
+  if (os === "win32") {
+    if (cpu !== "x64") {
+      return "claude-smart currently supports Windows x64 only; Windows ARM is not supported because native ML wheels are unavailable.";
+    }
+    return null;
+  }
+  if (os === "linux") return null;
+  return "claude-smart currently supports Apple Silicon macOS 14+, Windows x64, and Linux for vanilla installs.";
+}
+
+function assertSupportedRuntimePlatform() {
+  const message = platformSupportError();
+  if (message) throw new Error(message);
 }
 
 function runChecked(command, args, options = {}) {
@@ -245,7 +376,7 @@ function downloadFile(url, dest) {
 function resolveCommand(names, extraDirs = []) {
   const pathParts = [
     ...extraDirs,
-    ...(process.env.PATH || "").split(process.platform === "win32" ? ";" : ":"),
+    ...(process.env.PATH || "").split(isWindows() ? ";" : ":"),
   ].filter(Boolean);
   for (const dir of pathParts) {
     for (const name of names) {
@@ -265,19 +396,26 @@ function privateNodeBinDirs() {
   return [join(root, "bin"), root];
 }
 
+function resolvePrivateCommand(names) {
+  for (const dir of privateNodeBinDirs()) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
 function resolvePrivateNode() {
-  return resolveCommand(isWindows() ? ["node.exe", "node"] : ["node"], privateNodeBinDirs());
+  return resolvePrivateCommand(isWindows() ? ["node.exe", "node"] : ["node"]);
 }
 
 function resolvePrivateNpm() {
-  return resolveCommand(
-    isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"],
-    privateNodeBinDirs(),
-  );
+  return resolvePrivateCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
 }
 
 function runtimeEnv(extraDirs = []) {
-  const delimiter = process.platform === "win32" ? ";" : ":";
+  const delimiter = isWindows() ? ";" : ":";
   const dirs = [
     ...extraDirs,
     ...privateNodeBinDirs(),
@@ -290,14 +428,35 @@ function runtimeEnv(extraDirs = []) {
   };
 }
 
-async function ensureWindowsPrivateNode() {
-  if (!isWindows()) return null;
+function nodeArchiveSpec() {
+  const os = currentPlatform();
+  const cpu = currentArch();
+  let nodeOs = null;
+  let archiveExt = null;
+  if (os === "darwin") {
+    nodeOs = "darwin";
+    archiveExt = "tar.gz";
+  } else if (os === "win32") {
+    nodeOs = "win";
+    archiveExt = "zip";
+  } else if (os === "linux") {
+    nodeOs = "linux";
+    archiveExt = "tar.gz";
+  } else {
+    throw new Error(`unsupported OS for private Node.js install: ${os}`);
+  }
+  const nodeArch = cpu === "arm64" ? "arm64" : "x64";
+  return { nodeOs, nodeArch, archiveExt };
+}
+
+async function ensurePrivateNode() {
   const existing = resolvePrivateNode();
   const existingNpm = resolvePrivateNpm();
   if (existing && existingNpm) return { node: existing, npm: existingNpm };
 
+  assertSupportedRuntimePlatform();
   const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "22";
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const { nodeOs, nodeArch, archiveExt } = nodeArchiveSpec();
   const baseUrl = process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
   const nodeRoot = join(homedir(), ".claude-smart", "node");
   const temp = join(tmpdir(), `claude-smart-node-${process.pid}`);
@@ -311,8 +470,8 @@ async function ensureWindowsPrivateNode() {
   const match = sums
     .split(/\r?\n/)
     .map((line) => line.trim().split(/\s+/))
-    .find((parts) => parts[1] && new RegExp(`^node-v[^ ]+-win-${arch}\\.zip$`).test(parts[1]));
-  if (!match) throw new Error(`could not resolve Node.js win-${arch} archive from ${baseUrl}`);
+    .find((parts) => parts[1] && new RegExp(`^node-v[^ ]+-${nodeOs}-${nodeArch}\\.${archiveExt.replace(/\./g, "\\.")}$`).test(parts[1]));
+  if (!match) throw new Error(`could not resolve Node.js ${nodeOs}-${nodeArch} archive from ${baseUrl}`);
   const [expectedHash, archiveName] = match;
   const archivePath = join(temp, archiveName);
   await downloadFile(`${baseUrl}/${archiveName}`, archivePath);
@@ -321,26 +480,56 @@ async function ensureWindowsPrivateNode() {
     throw new Error(`Node.js checksum verification failed for ${archiveName}`);
   }
 
-  const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
-  if (!powershell) throw new Error("PowerShell is required to extract private Node.js on Windows");
   const extractDir = join(temp, "extract");
   mkdirSync(extractDir, { recursive: true });
-  const code = await runChecked(
-    powershell,
-    [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force",
-    ],
-    { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir } },
-  );
+  let code = 0;
+  if (archiveExt === "zip") {
+    const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
+    if (!powershell) throw new Error("PowerShell is required to extract private Node.js on Windows");
+    code = await runChecked(
+      powershell,
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force",
+      ],
+      { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir } },
+    );
+  } else {
+    const tar = resolveCommand(["tar"]);
+    if (!tar) throw new Error("tar is required to extract private Node.js on macOS");
+    code = await runChecked(tar, ["-xzf", archivePath, "-C", extractDir]);
+  }
   if (code !== 0) throw new Error(`Node.js archive extraction failed for ${archiveName}`);
-  const extracted = join(extractDir, archiveName.replace(/\.zip$/, ""));
+  const extracted = join(extractDir, archiveName.replace(/\.zip$/, "").replace(/\.tar\.gz$/, ""));
   const current = privateNodeRoot();
-  rmSync(current, { recursive: true, force: true });
-  cpSync(extracted, current, { recursive: true, force: true });
+  // Atomic swap with rollback: move existing `current` to a backup first
+  // so a non-EXDEV failure (EACCES, EBUSY) does not leave the user with no
+  // private node at all. EXDEV (cross-device) falls back to cpSync.
+  const backup = `${current}.prev.${process.pid}`;
+  rmSync(backup, { recursive: true, force: true });
+  const hadCurrent = existsSync(current);
+  if (hadCurrent) renameSync(current, backup);
+  try {
+    try {
+      renameSync(extracted, current);
+    } catch (err) {
+      if (!err || err.code !== "EXDEV") throw err;
+      cpSync(extracted, current, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: true,
+      });
+    }
+  } catch (err) {
+    if (hadCurrent) {
+      try { renameSync(backup, current); } catch { /* leave backup for manual recovery */ }
+    }
+    throw err;
+  }
+  rmSync(backup, { recursive: true, force: true });
   rmSync(temp, { recursive: true, force: true });
 
   const node = resolvePrivateNode();
@@ -356,21 +545,33 @@ function resolveUv() {
   ]);
 }
 
-async function ensureWindowsUv() {
+async function ensureUv() {
   let uv = resolveUv();
   if (uv) return uv;
-  const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
-  if (!powershell) throw new Error("PowerShell is required to install uv on Windows");
-  const code = await runChecked(powershell, [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    "irm https://astral.sh/uv/install.ps1 | iex",
-  ]);
-  if (code !== 0) throw new Error("uv install via PowerShell failed");
+  assertSupportedRuntimePlatform();
+  let code = 0;
+  if (isWindows()) {
+    const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
+    if (!powershell) throw new Error("PowerShell is required to install uv on Windows");
+    code = await runChecked(powershell, [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "irm https://astral.sh/uv/install.ps1 | iex",
+    ]);
+    if (code !== 0) throw new Error("uv install via PowerShell failed");
+  } else {
+    const installer = join(homedir(), ".claude-smart", "uv-install.sh");
+    mkdirSync(dirname(installer), { recursive: true });
+    await downloadFile("https://astral.sh/uv/install.sh", installer);
+    const sh = resolveCommand(["sh"]);
+    if (!sh) throw new Error("sh is required to install uv on macOS");
+    code = await runChecked(sh, [installer]);
+    if (code !== 0) throw new Error("uv install failed");
+  }
   uv = resolveUv();
-  if (!uv) throw new Error("uv install reported success but uv.exe was not found");
+  if (!uv) throw new Error("uv install reported success but uv was not found");
   return uv;
 }
 
@@ -378,50 +579,83 @@ function quoteCommandPart(part) {
   return `"${String(part).replace(/"/g, '\\"')}"`;
 }
 
-function patchCodexHooksForWindows(pluginRoot, nodePath) {
+function patchCodexHooksForNode(pluginRoot, nodePath) {
   const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
   const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) => [nodePath, runner, ...args].map(quoteCommandPart).join(" ");
-  const sessionHooks = parsed.hooks.SessionStart?.[0]?.hooks || [];
-  if (sessionHooks[0]) sessionHooks[0].command = command("ensure-root");
-  if (sessionHooks[1]) sessionHooks[1].command = command("backend");
-  if (sessionHooks[2]) sessionHooks[2].command = command("dashboard");
-  if (sessionHooks[3]) sessionHooks[3].command = command("hook", "session-start");
-  const userPrompt = parsed.hooks.UserPromptSubmit?.[0]?.hooks?.[0];
-  if (userPrompt) userPrompt.command = command("hook", "user-prompt");
-  const postTool = parsed.hooks.PostToolUse?.[0]?.hooks?.[0];
-  if (postTool) postTool.command = command("hook", "post-tool");
-  const stop = parsed.hooks.Stop?.[0]?.hooks?.[0];
-  if (stop) stop.command = command("hook", "stop");
+  // Dispatch by command content rather than index — entries can be added or
+  // reordered (e.g. the SessionStart install hook at index 0) without
+  // breaking the patch. Entries that must run as bash (smart-install.sh)
+  // are left untouched.
+  const patchOne = (original) => {
+    if (typeof original !== "string") return original;
+    if (original.includes("smart-install.sh")) return original;
+    if (original.includes("ensure-plugin-root.sh")) return command("ensure-root");
+    if (original.includes("backend-service.sh")) return command("backend");
+    if (original.includes("dashboard-service.sh")) return command("dashboard");
+    // Match `hook_entry.sh" codex session-start` and similar — between
+    // the script name, the host token, and the subcommand there may be
+    // closing quotes plus whitespace, so allow both as separators.
+    const hookMatch = original.match(/hook_entry\.sh\b[\s"']+(?:codex|claude-code)[\s"']+([\w-]+)/);
+    if (hookMatch) return command("hook", hookMatch[1]);
+    return original;
+  };
+  for (const event of Object.keys(parsed.hooks || {})) {
+    for (const block of parsed.hooks[event] || []) {
+      for (const hook of block.hooks || []) {
+        hook.command = patchOne(hook.command);
+      }
+    }
+  }
   writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
 }
 
-function ensureWindowsPluginRoot(pluginRoot) {
+function ensurePluginRoot(pluginRoot) {
   const reflexioDir = dirname(REFLEXIO_ENV_PATH);
   const link = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
   rmSync(link, { recursive: true, force: true });
   try {
-    require("fs").symlinkSync(pluginRoot, link, "junction");
+    require("fs").symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
   } catch {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   }
 }
 
-async function bootstrapWindowsCodexCache(pluginRoot) {
-  if (!isWindows()) return;
-  process.stdout.write("Preparing Windows Codex runtime for claude-smart hooks...\n");
-  const nodeRuntime = await ensureWindowsPrivateNode();
-  patchCodexHooksForWindows(pluginRoot, nodeRuntime.node);
-  ensureWindowsPluginRoot(pluginRoot);
-  const uv = await ensureWindowsUv();
+async function bootstrapPluginRuntime(pluginRoot) {
+  assertSupportedRuntimePlatform();
+  process.stdout.write("Preparing claude-smart runtime for hooks...\n");
+  const nodeRuntime = await ensurePrivateNode();
+  patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
+  ensurePluginRoot(pluginRoot);
+  const uv = await ensureUv();
   const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
+  const pyprojectPath = join(pluginRoot, "pyproject.toml");
+  const pyproject = existsSync(pyprojectPath) ? readFileSync(pyprojectPath, "utf8") : "";
+  if (/^\s*\[tool\.uv\.sources\]\s*$/m.test(pyproject)) {
+    const lockCode = await runChecked(
+      uv,
+      ["lock", "--quiet"],
+      { cwd: pluginRoot, env },
+    );
+    if (lockCode !== 0) throw new Error(`uv lock failed in ${pluginRoot}`);
+  }
   let code = await runChecked(
     uv,
     ["sync", "--locked", "--python", "3.12", "--quiet"],
     { cwd: pluginRoot, env },
   );
+  if (code !== 0) {
+    process.stderr.write(
+      `warning: quiet uv sync failed in ${pluginRoot}; retrying with full output.\n`,
+    );
+    code = await runChecked(
+      uv,
+      ["sync", "--locked", "--python", "3.12"],
+      { cwd: pluginRoot, env },
+    );
+  }
   if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
 
   const dashboardDir = join(pluginRoot, "dashboard");
@@ -455,9 +689,10 @@ function printHelp() {
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
       "  2. codex plugin marketplace add <copied marketplace>",
       "  3. codex features enable hooks && codex features enable plugin_hooks",
-      "  4. Installs claude-smart into Codex's plugin cache and enables it",
-      "  5. Trusts and enables claude-smart hook entries in ~/.codex/config.toml",
-      "  6. Restart Codex.",
+      "  4. Installs private Node/npm, uv, Python deps, and dashboard deps as needed",
+      "  5. Installs claude-smart into Codex's plugin cache and enables it",
+      "  6. Trusts and enables claude-smart hook entries in ~/.codex/config.toml",
+      "  7. Restart Codex.",
       "",
       "Update:",
       "  npx claude-smart update                        Update to the latest version",
@@ -950,11 +1185,23 @@ async function runInstall(args) {
       `Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`,
     );
   }
+  try {
+    const pluginRoot = await bootstrapClaudeCodeInstall();
+    process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+  } catch (err) {
+    process.stderr.write(
+      `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
+    );
+    process.stderr.write(
+      "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n",
+    );
+    process.exit(1);
+  }
 
   process.stdout.write(
     [
       "",
-      "claude-smart installed. Restart Claude Code in your project.",
+      "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
       "The reflexio backend and dashboard auto-start on session start.",
       "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
       "",
@@ -1009,7 +1256,7 @@ async function runInstallCodex() {
   try {
     cacheDir = installCodexPluginCache(join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
-    await bootstrapWindowsCodexCache(cacheDir);
+    await bootstrapPluginRuntime(cacheDir);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -1113,7 +1360,18 @@ async function main() {
   process.exit(1);
 }
 
-main().catch((err) => {
-  process.stderr.write(`claude-smart: ${err && err.message ? err.message : err}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`claude-smart: ${err && err.message ? err.message : err}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  assertSupportedRuntimePlatform,
+  bootstrapPluginRuntime,
+  ensurePrivateNode,
+  ensureUv,
+  patchCodexHooksForNode,
+  platformSupportError,
+};

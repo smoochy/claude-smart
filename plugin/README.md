@@ -16,6 +16,10 @@ under `~/.claude-smart/` when they are missing. If Node.js is already installed,
 `npx claude-smart install` is equivalent; if uv is already installed,
 `uvx claude-smart install` is equivalent.
 
+Supported vanilla native targets are Apple Silicon macOS 14+ and Windows x64.
+Intel Mac, macOS 13 or older, and Windows ARM fail early because the local
+embedding/ML dependency stack does not provide a complete native wheel set.
+
 Then restart Claude Code.
 
 ## Uninstall
