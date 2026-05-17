@@ -163,7 +163,7 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
     assert "PreToolUse" not in hooks
     assert 'CLAUDE_SMART_HOST="codex"' in codex_env
-    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat.py"' in (
+    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in (
         backend_service
     )
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
@@ -220,7 +220,7 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
 
     instruction = cs_cite.CITATION_INSTRUCTION
 
-    assert "Do not call `cs-cite`" in instruction
+    assert "Do not call a shell command" in instruction
     assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in instruction
 
 

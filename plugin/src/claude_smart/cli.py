@@ -76,8 +76,11 @@ _CODEX_REQUIRED_FILES = (
     Path(".agents/plugins/marketplace.json"),
     Path("plugin/.codex-plugin/plugin.json"),
     Path("plugin/hooks/codex-hooks.json"),
-    Path("plugin/scripts/codex-claude-compat.py"),
+    Path("plugin/scripts/codex-claude-compat"),
+    Path("plugin/scripts/codex-claude-compat.cmd"),
+    Path("plugin/scripts/codex-claude-compat.js"),
     Path("plugin/scripts/codex-hook.js"),
+    Path("plugin/scripts/backend-log-runner.sh"),
     Path("plugin/scripts/_codex_env.sh"),
 )
 _COPYTREE_IGNORE = shutil.ignore_patterns(
