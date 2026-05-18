@@ -15,8 +15,32 @@ from claude_smart.stall_banner import render_banner
 # Claude-smart's preferred extraction cadence — more frequent, smaller windows
 # than reflexio's out-of-box 10/5. Applied idempotently to the reflexio server
 # on every SessionStart via Adapter.apply_extraction_defaults.
-_CLAUDE_SMART_WINDOW_SIZE = 5
-_CLAUDE_SMART_STRIDE_SIZE = 3
+#
+# Env-var overrides let benchmark harnesses (SWE-bench Verified, in particular)
+# run with ``CLAUDE_SMART_STRIDE_SIZE=1`` so a single short autonomous session
+# triggers extraction on its sole publish instead of being silently filtered
+# out by the stride pre-filter (``new < stride_size``). Production users keep
+# the defaults; the values are only read on SessionStart, so a launcher that
+# sets the env var has predictable effect for the entire Claude Code session.
+#
+# Parsing is defensive: a non-integer env value falls back to the default
+# rather than raising at import time. SessionStart is the hook that wires up
+# every subsequent hook, so an import-time crash here would silently disable
+# the whole plugin for the session.
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_CLAUDE_SMART_WINDOW_SIZE = _int_env("CLAUDE_SMART_WINDOW_SIZE", 5)
+_CLAUDE_SMART_STRIDE_SIZE = _int_env("CLAUDE_SMART_STRIDE_SIZE", 3)
 # Optimizer is on by default. Set this env var to "0" to skip pushing the
 # claude-smart optimizer defaults on SessionStart (kill switch).
 _DISABLE_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"
