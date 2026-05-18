@@ -6,7 +6,7 @@
   claude-smart
 </h1>
 
-<h4 align="center">A local learning plugin for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> and Codex that turns corrections into durable rules your coding assistant follows in future sessions.</h4>
+<h4 align="center">A self-improvement plugin for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> and Codex that turns interactions into durable skills they follow in future sessions.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -37,22 +37,22 @@
 </p>
 
 <p align="center">
-  It learns both corrections and successful execution patterns—so your coding assistant avoids repeating mistakes and reuses what works. Project-specific skills capture repo-local rules, and shared skills roll up durable patterns for reuse across projects.
+  claude-smart learns from your corrections <i>and</i> from what's already working — so the assistant stops repeating mistakes and reuses proven paths. Project-specific skills capture repo-local rules, and shared skills roll up durable patterns for reuse across projects.
 </p>
 
 <p align="center">
-  <b>vs <code>claude-mem</code>:</b> ~3× better at turning your corrections into rules Claude follows, ~50% more of what you tell Claude sticks. <a href="EXPERIMENT.md"><b>Read the benchmark →</b></a>
+  <b>vs <code>claude-mem</code>:</b> ~3× better at turning your corrections into rules Claude follows, ~50% more of your guidance is retained. <a href="EXPERIMENT.md"><b>Read the benchmark →</b></a>
 </p>
 
 ---
 
 ## Why Learning, Not Memory
 
-Most memory solutions are still mostly informative—Claude remembers what happened, without necessarily changing what it does next.
+Most memory tools just record. Claude remembers what happened, but doesn't change what it does next.
 
 `claude-smart` focuses on learning instead.
 
-Four ways this changes what your coding assistant can do for you:
+Four things this changes:
 
 - 💡 **Stop repeating the same mistakes:** Produces actionable skills Claude can follow next time; memory only records what happened.
 
@@ -60,12 +60,12 @@ Four ways this changes what your coding assistant can do for you:
   > **Memory:** “deploy broke after prisma bump; user rolled back”<br>
   > **Learning:** “treat major-version bumps of ORMs/DB drivers as breaking — verify with integration tests, not just unit tests”
 
-- 🚀 **Start from the optimized path:** Preserves and optimizes execution paths so Claude can reuse what already works.
+- 🚀 **Start from the optimized path:** Records and optimizes the steps that worked so Claude can reuse them, instead of re-exploring each session.
   > *Example:* Claude spends several iterations trying to start the local dev environment before discovering that this repo requires `pnpm dev:all` instead of the usual `npm run dev`.<br>
   > **Memory:** “user mentioned that `npm run dev` did not work”<br>
   > **Learning:** “for this repo, always use `pnpm dev:all` to start the full local stack — `npm run dev` only starts the frontend and causes missing service errors”
 
-  Instead of re-exploring, Claude starts from the proven path—reducing planning steps, latency, and token usage.
+  Instead of re-exploring, Claude Code starts from the proven path—reducing planning steps, latency, and token usage.
 
 - 🌐 **Project-specific and shared skills:** Session memory disappears with the conversation. Project-specific skills preserve repo-local rules, while shared skills roll up patterns that should transfer across projects. Preferences stay scoped to the current project so per-repo preferences don't leak across projects.
 
@@ -92,12 +92,6 @@ claude plugin marketplace add ReflexioAI/claude-smart
 claude plugin install claude-smart@reflexioai
 ```
 
-The plugin Setup hook installs its own `uv`, Python 3.12 environment, and
-private Node.js/npm runtime under `~/.claude-smart/` when they are missing, so
-you do not need to install Python or Node globally for the plugin/dashboard.
-On native Windows, Claude Code hooks still need a Git Bash-compatible `bash`
-until Claude Code exposes a single cross-platform hook command shape.
-
 To uninstall:
 
 ```bash
@@ -119,11 +113,6 @@ npx claude-smart install --host codex
 Then fully quit and reopen Codex so hooks reload.
 
 Requires the `codex` CLI on `PATH` and Node.js (for `npx`).
-
-The `npx` command needs Node.js only to launch the installer. The installed
-plugin uses a private Node.js/npm runtime and a `uv`-managed Python 3.12
-environment under `~/.claude-smart/`, so hooks and the dashboard do not depend
-on global Python, uv, Node, or npm after install.
 
 To uninstall:
 
@@ -167,7 +156,7 @@ the first local embedding model download. The ONNX model cache lives at
 
 ## Dashboard
 
-A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to launch dashboard in browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
+A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to open it in your browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
 
 <p align="center">
   <img src="assets/preferences_dashboard.png" alt="Preferences dashboard" width="49%">
