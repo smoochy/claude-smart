@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
+HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
@@ -228,11 +230,113 @@ def test_backend_service_uses_capped_logging() -> None:
     assert '>>"$LOG_FILE"' not in service
 
 
+def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert "[claude-smart] backend: uv not on PATH; running installer" in backend
+    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in backend
+    assert "[claude-smart] backend: uv not on PATH after installer; skipping" in backend
+    assert "[claude-smart] dashboard: npm is not on PATH; running installer" in dashboard
+    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in dashboard
+    assert "npm is not on PATH after installer; dashboard cannot start" in dashboard
+
+
+def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
+    script = CODEX_HOOK.read_text()
+
+    assert "function runInstaller(root, reason)" in script
+    assert "function startInstallerDetached(root, reason)" in script
+    assert 'runInstaller(root, "backend: uv not on PATH")' in script
+    assert 'runInstaller(root, "dashboard: npm not on PATH")' in script
+    assert 'runInstaller(root, "hook: uv not on PATH")' in script
+
+
 def test_smart_install_waits_on_existing_lock() -> None:
     script = SMART_INSTALL.read_text()
 
     assert "flock -n" not in script
     assert "flock 9" in script
+    assert 'INSTALL_REAP_LOCK="$MARKER_DIR/install.lock.reap"' in script
+    assert 'mkdir "$INSTALL_REAP_LOCK"' in script
+    assert "set -C" in script
+    assert 'remove_stale_install_lock "$lock_pid"' in script
+    assert '[ "$(cat "$INSTALL_LOCK" 2>/dev/null || true)" = "$$" ]' in script
+    assert "kill -0 \"$lock_pid\"" in script
+
+
+def test_smart_install_waits_on_portable_lock_without_flock(tmp_path: Path) -> None:
+    bin_dir = Path(_minimal_path(tmp_path, "dirname", "mkdir", "rm", "cat", "sleep", "sed", "awk"))
+    for name, output in {"node": "v22.99.0", "npm": "10.9.0"}.items():
+        executable = bin_dir / name
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
+    env["PATH"] = str(bin_dir)
+    env["SHELL"] = ""
+
+    state_dir = tmp_path / ".claude-smart"
+    state_dir.mkdir()
+    lock = state_dir / "install.lock"
+    locker = subprocess.Popen(
+        ["/bin/sh", "-c", f'printf "%s\\n" "$$" > "{lock}"; sleep 1; rm -f "{lock}"'],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not lock.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert lock.exists()
+
+        started = time.monotonic()
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", str(SMART_INSTALL)],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        locker.wait(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed >= 0.8
+    assert not lock.exists()
+
+
+def test_smart_install_reaps_stale_portable_lock_without_flock(tmp_path: Path) -> None:
+    bin_dir = Path(_minimal_path(tmp_path, "dirname", "mkdir", "rm", "rmdir", "cat", "sleep", "sed", "awk"))
+    for name, output in {"node": "v22.99.0", "npm": "10.9.0"}.items():
+        executable = bin_dir / name
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
+    env["PATH"] = str(bin_dir)
+    env["SHELL"] = ""
+
+    state_dir = tmp_path / ".claude-smart"
+    state_dir.mkdir()
+    lock = state_dir / "install.lock"
+    lock.write_text("999999999\n")
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(SMART_INSTALL)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not lock.exists()
+    assert not (state_dir / "install.lock.reap").exists()
 
 
 def test_claude_code_install_hook_matches_session_start_modes() -> None:
@@ -243,6 +347,36 @@ def test_claude_code_install_hook_matches_session_start_modes() -> None:
     assert install_block["matcher"] == runtime_block["matcher"]
     assert install_block["matcher"] == "startup|clear|compact|resume"
     assert "smart-install.sh" in install_block["hooks"][0]["command"]
+    session_start_hook = runtime_block["hooks"][1]
+    assert "hook_entry.sh" in session_start_hook["command"]
+    assert session_start_hook["timeout"] == 300
+    backend_hook = runtime_block["hooks"][2]
+    dashboard_hook = runtime_block["hooks"][3]
+    assert "backend-service.sh" in backend_hook["command"]
+    assert backend_hook["timeout"] == 300
+    assert "dashboard-service.sh" in dashboard_hook["command"]
+    assert dashboard_hook["timeout"] == 300
+
+
+def test_codex_session_start_hook_has_install_recovery_budget() -> None:
+    hooks = json.loads((REPO_ROOT / "plugin" / "hooks" / "codex-hooks.json").read_text())
+    session_hooks = hooks["hooks"]["SessionStart"][0]["hooks"]
+    hook_entry = next(hook for hook in session_hooks if "hook_entry.sh" in hook["command"])
+    backend_hook = next(hook for hook in session_hooks if "backend-service.sh" in hook["command"])
+    dashboard_hook = next(hook for hook in session_hooks if "dashboard-service.sh" in hook["command"])
+
+    assert hook_entry["timeout"] == 300
+    assert backend_hook["timeout"] == 300
+    assert dashboard_hook["timeout"] == 300
+
+
+def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
+    script = HOOK_ENTRY.read_text()
+
+    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in script
+    assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
+    assert 'bash "$HERE/backend-service.sh" start' in script
+    assert 'bash "$HERE/dashboard-service.sh" start' in script
 
 
 def test_node_installer_platform_preflight_messages() -> None:

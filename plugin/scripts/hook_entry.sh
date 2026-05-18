@@ -37,6 +37,7 @@ claude_smart_prepend_astral_bins
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
+STATE_DIR="$HOME/.claude-smart"
 if [ -f "$FAILURE_MARKER" ]; then
   if [ "$EVENT" = "session-start" ] && command -v python3 >/dev/null 2>&1; then
     python3 - "$FAILURE_MARKER" <<'PY'
@@ -61,9 +62,34 @@ PY
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  # uv missing post-install → don't crash the session, just no-op.
-  echo '{"continue":true,"suppressOutput":true}'
-  exit 0
+  # Self-heal from skipped Setup/SessionStart bootstrap. SessionStart can
+  # afford to wait because it has the install budget; prompt/tool hooks start
+  # the same installer detached so normal work is not blocked by first-run
+  # dependency setup.
+  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
+    echo '{"continue":true,"suppressOutput":true}'
+    exit 0
+  fi
+  if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+    mkdir -p "$STATE_DIR"
+    if [ "$EVENT" = "session-start" ]; then
+      CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
+      claude_smart_prepend_astral_bins
+      claude_smart_prepend_node_bins
+      if command -v uv >/dev/null 2>&1; then
+        bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
+        bash "$HERE/dashboard-service.sh" start >/dev/null 2>&1 || true
+      fi
+    else
+      claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+        bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+        >>"$STATE_DIR/install.log" 2>&1 || true
+    fi
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    echo '{"continue":true,"suppressOutput":true}'
+    exit 0
+  fi
 fi
 
 # Stdin is the hook payload JSON — stream it through to the Python CLI.

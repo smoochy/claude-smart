@@ -18,17 +18,17 @@
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/backend-service.sh\" start",
-            "timeout": 30
+            "timeout": 300
           },
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/dashboard-service.sh\" start",
-            "timeout": 10
+            "timeout": 300
           },
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/hook_entry.sh\" codex session-start",
-            "timeout": 30,
+            "timeout": 300,
             "statusMessage": "Loading claude-smart context"
           }
         ]

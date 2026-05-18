@@ -186,8 +186,16 @@ case "$CMD" in
       emit_ok; exit 0
     fi
     if ! command -v uv >/dev/null 2>&1; then
-      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; skipping"
-      emit_ok; exit 0
+      if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; running installer"
+        CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >>"$STATE_DIR/install.log" 2>&1 || true
+        claude_smart_source_login_path
+        claude_smart_prepend_astral_bins
+      fi
+      if ! command -v uv >/dev/null 2>&1; then
+        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH after installer; skipping"
+        emit_ok; exit 0
+      fi
     fi
     cd "$PLUGIN_ROOT"
 

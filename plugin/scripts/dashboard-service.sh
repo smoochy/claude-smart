@@ -100,10 +100,19 @@ case "$CMD" in
     fi
     NPM_BIN=$(claude_smart_resolve_npm || true)
     if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
-      reason="npm is not on PATH; dashboard cannot start"
-      echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
-      claude_smart_write_dashboard_unavailable "$reason"
-      emit_ok; exit 0
+      if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+        echo "[claude-smart] dashboard: npm is not on PATH; running installer" >>"$LOG_FILE"
+        CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >>"$STATE_DIR/install.log" 2>&1 || true
+        claude_smart_source_login_path
+        claude_smart_prepend_node_bins
+        NPM_BIN=$(claude_smart_resolve_npm || true)
+      fi
+      if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+        reason="npm is not on PATH after installer; dashboard cannot start"
+        echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
+        claude_smart_write_dashboard_unavailable "$reason"
+        emit_ok; exit 0
+      fi
     fi
 
     # `npm run start` requires a prior `next build`. Do NOT build in the

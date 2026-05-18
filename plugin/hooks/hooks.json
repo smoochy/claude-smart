@@ -35,17 +35,17 @@
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code session-start",
-            "timeout": 30
+            "timeout": 300
           },
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/backend-service.sh\" start",
-            "timeout": 30
+            "timeout": 300
           },
           {
             "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/dashboard-service.sh\" start",
-            "timeout": 10
+            "timeout": 300
           }
         ]
       }

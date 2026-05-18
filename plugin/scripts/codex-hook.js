@@ -104,6 +104,10 @@ function npmPath() {
   return commandPath(process.platform === "win32" ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
 }
 
+function bashPath() {
+  return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]);
+}
+
 function stateFile(name) {
   return path.join(STATE_DIR, name);
 }
@@ -202,6 +206,49 @@ function detached(command, args, options = {}) {
   return child.pid;
 }
 
+function runInstaller(root, reason) {
+  if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1") return false;
+  const script = path.join(root, "scripts", "smart-install.sh");
+  if (!fs.existsSync(script)) return false;
+  const bash = bashPath();
+  if (!bash) return false;
+  appendLog("backend.log", `[claude-smart] ${reason}; running installer`);
+  const result = spawnSync(bash, [script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      CLAUDE_SMART_BOOTSTRAPPING: "1",
+    },
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+    windowsHide: true,
+  });
+  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  if (output) {
+    ensureDir(STATE_DIR);
+    fs.appendFileSync(path.join(STATE_DIR, "install.log"), `${output}\n`);
+    trimLog(path.join(STATE_DIR, "install.log"));
+  }
+  prependRuntimePath();
+  return result.status === 0;
+}
+
+function startInstallerDetached(root, reason) {
+  if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1") return false;
+  const script = path.join(root, "scripts", "smart-install.sh");
+  const bash = bashPath();
+  if (!bash || !fs.existsSync(script)) return false;
+  appendLog("backend.log", `[claude-smart] ${reason}; starting installer in background`);
+  detached(bash, [script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      CLAUDE_SMART_BOOTSTRAPPING: "1",
+    },
+  });
+  return true;
+}
+
 function readPid(file) {
   try {
     const value = fs.readFileSync(file, "utf8").trim();
@@ -262,7 +309,11 @@ async function startBackend(root) {
   }
   const uv = uvPath();
   if (!uv) {
-    appendLog("backend.log", "[claude-smart] backend: uv not on PATH; skipping");
+    runInstaller(root, "backend: uv not on PATH");
+  }
+  const readyUv = uvPath();
+  if (!readyUv) {
+    appendLog("backend.log", "[claude-smart] backend: uv not on PATH after installer; skipping");
     emitOk();
     return;
   }
@@ -284,7 +335,7 @@ async function startBackend(root) {
     INTERACTION_CLEANUP_DELETE_COUNT: process.env.INTERACTION_CLEANUP_DELETE_COUNT || "200",
   };
   const pid = detached(
-    uv,
+    readyUv,
     [
       "run",
       "--project",
@@ -326,14 +377,18 @@ async function startDashboard(root) {
   }
   const npm = npmPath();
   if (!npm) {
-    appendLog("dashboard.log", "[claude-smart] dashboard: npm not on PATH; skipping");
+    runInstaller(root, "dashboard: npm not on PATH");
+  }
+  const readyNpm = npmPath();
+  if (!readyNpm) {
+    appendLog("dashboard.log", "[claude-smart] dashboard: npm not on PATH after installer; skipping");
     emitOk();
     return;
   }
   if (!fs.existsSync(path.join(dashboard, ".next"))) {
     const buildPidFile = path.join(STATE_DIR, "dashboard-build.pid");
     if (!pidAlive(readPid(buildPidFile))) {
-      const pid = detached(npm, ["run", "build"], { cwd: dashboard });
+      const pid = detached(readyNpm, ["run", "build"], { cwd: dashboard });
       writePid(buildPidFile, pid);
       appendLog("dashboard.log", "[claude-smart] dashboard: .next missing; started background build");
     }
@@ -346,7 +401,7 @@ async function startDashboard(root) {
     REFLEXIO_URL: readBackendUrl(),
     CLAUDE_SMART_DASHBOARD_WORKSPACE: process.cwd(),
   };
-  const pid = detached(npm, ["run", "start"], { cwd: dashboard, env });
+  const pid = detached(readyNpm, ["run", "start"], { cwd: dashboard, env });
   writePid(pidFile, pid);
   await waitForHealth(DASHBOARD_PORT, "/api/health", "x-claude-smart-dashboard", 5);
   emitOk();
@@ -354,11 +409,19 @@ async function startDashboard(root) {
 
 function runHook(root, event) {
   trimLog(path.join(STATE_DIR, "backend.log"));
-  const uv = uvPath();
+  let uv = uvPath();
   if (!uv) {
-    appendLog("backend.log", "[claude-smart] hook: uv not on PATH; skipping");
-    emitOk();
-    return 0;
+    if (event === "session-start") {
+      runInstaller(root, "hook: uv not on PATH");
+      uv = uvPath();
+    } else {
+      startInstallerDetached(root, "hook: uv not on PATH");
+    }
+    if (!uv) {
+      appendLog("backend.log", "[claude-smart] hook: uv not on PATH after installer; skipping");
+      emitOk();
+      return 0;
+    }
   }
   const input = fs.readFileSync(0);
   const result = spawnSync(

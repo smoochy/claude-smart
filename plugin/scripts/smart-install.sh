@@ -22,20 +22,60 @@ MARKER_DIR="$HOME/.claude-smart"
 FAILURE_MARKER="$MARKER_DIR/install-failed"
 SUCCESS_MARKER="$MARKER_DIR/install-complete"
 INSTALL_LOCK="$MARKER_DIR/install.lock"
+INSTALL_REAP_LOCK="$MARKER_DIR/install.lock.reap"
 mkdir -p "$MARKER_DIR"
+
+remove_stale_install_lock() {
+  local expected current
+
+  expected="$1"
+  if ! mkdir "$INSTALL_REAP_LOCK" 2>/dev/null; then
+    sleep 1
+    return 0
+  fi
+  current="$(cat "$INSTALL_LOCK" 2>/dev/null || true)"
+  if [ "$current" = "$expected" ]; then
+    rm -f "$INSTALL_LOCK"
+  fi
+  rmdir "$INSTALL_REAP_LOCK" 2>/dev/null || true
+}
+
+acquire_install_lock() {
+  local lock_pid
+
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$INSTALL_LOCK"
+    if ! flock 9; then
+      echo "[claude-smart] install lock failed; continuing without serialization" >&2
+      echo '{"continue":true,"suppressOutput":true}'
+      exit 0
+    fi
+    return 0
+  fi
+
+  while ! ( set -C; printf '%s\n' "$$" > "$INSTALL_LOCK" ) 2>/dev/null; do
+    lock_pid="$(cat "$INSTALL_LOCK" 2>/dev/null || true)"
+    case "$lock_pid" in
+      ''|*[!0-9]*)
+        remove_stale_install_lock "$lock_pid"
+        ;;
+      *)
+        if kill -0 "$lock_pid" 2>/dev/null; then
+          sleep 1
+        else
+          remove_stale_install_lock "$lock_pid"
+        fi
+        ;;
+    esac
+  done
+  trap '[ "$(cat "$INSTALL_LOCK" 2>/dev/null || true)" = "$$" ] && rm -f "$INSTALL_LOCK" || true' EXIT
+}
 
 # Serialize concurrent installer runs (SessionStart hook + slash-command
 # self-heal can both invoke this script). Wait for the active installer
 # rather than returning early, otherwise callers can re-check uv before
 # the first install has finished and report a false missing-dependency error.
-if command -v flock >/dev/null 2>&1; then
-  exec 9>"$INSTALL_LOCK"
-  if ! flock 9; then
-    echo "[claude-smart] install lock failed; continuing without serialization" >&2
-    echo '{"continue":true,"suppressOutput":true}'
-    exit 0
-  fi
-fi
+acquire_install_lock
 
 rm -f "$FAILURE_MARKER"
 
