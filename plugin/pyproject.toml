@@ -1,6 +1,6 @@
 [project]
 name = "claude-smart"
-version = "0.2.30"
+version = "0.2.31"
 description = "Self-improving Claude Code plugin — learns from corrections via reflexio"
 readme = "README.md"
 requires-python = ">=3.12"
