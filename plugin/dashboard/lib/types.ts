@@ -143,3 +143,20 @@ export interface ReflexioConfig {
   user_playbook_extractor_configs?: ReflexioExtractorConfig[] | null;
   [k: string]: unknown;
 }
+
+/**
+ * Per-rule citation counts aggregated from local session cited_items. Timestamps
+ * are unix epoch seconds, matching the int-epoch convention used elsewhere in
+ * the dashboard.
+ */
+export interface PlaybookApplicationStat {
+  real_id: string;
+  citation_id?: string;
+  kind: "playbook" | "profile";
+  source_kind?: "user_playbook" | "agent_playbook" | "profile";
+  title: string;
+  href?: string;
+  applied_count: number;
+  last_applied_at: number | null;
+  last_interaction_id: number | null;
+}

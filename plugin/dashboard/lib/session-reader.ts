@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import type {
   CitedItem,
+  PlaybookApplicationStat,
   SessionDetail,
   SessionSummary,
   SessionTurn,
@@ -50,6 +51,24 @@ type RawRecord = {
   published_up_to?: number;
 };
 
+type RawInjectedEntry = CitedItem & {
+  dashboard_url?: string;
+  rule_url?: string;
+  ts?: number;
+};
+
+export interface RuleResolution {
+  id: string;
+  href: string;
+  title: string;
+  kind: CitedItem["kind"];
+}
+
+interface AppliedRulesOptions {
+  daysBack?: number;
+  limit?: number;
+}
+
 async function readJsonl(filePath: string): Promise<RawRecord[]> {
   const text = await fs.readFile(filePath, "utf-8");
   const out: RawRecord[] = [];
@@ -63,6 +82,195 @@ async function readJsonl(filePath: string): Promise<RawRecord[]> {
     }
   }
   return out;
+}
+
+async function readInjectedJsonl(filePath: string): Promise<RawInjectedEntry[]> {
+  const text = await fs.readFile(filePath, "utf-8");
+  const out: RawInjectedEntry[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const rec = JSON.parse(trimmed);
+      if (
+        rec &&
+        typeof rec === "object" &&
+        typeof rec.id === "string" &&
+        rec.id.length > 0
+      ) {
+        out.push(rec);
+      }
+    } catch {
+      // skip malformed line, matches state.py behaviour
+    }
+  }
+  return out;
+}
+
+function hrefForInjectedEntry(entry: RawInjectedEntry): string | null {
+  const realId = entry.real_id;
+  if (typeof realId === "string" && realId.length > 0) {
+    if (entry.kind === "profile") {
+      return `/preferences/project/${encodeURIComponent(realId)}`;
+    }
+    if (entry.kind === "playbook") {
+      const scope = entry.source_kind === "agent_playbook" ? "shared" : "project";
+      return `/skills/${scope}/${encodeURIComponent(realId)}`;
+    }
+  }
+  if (typeof entry.dashboard_url === "string" && entry.dashboard_url.length > 0) {
+    try {
+      const parsed = new URL(entry.dashboard_url);
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      if (entry.dashboard_url.startsWith("/")) return entry.dashboard_url;
+    }
+  }
+  return null;
+}
+
+function canonicalHrefForCitedItem(item: CitedItem): string | null {
+  const realId = item.real_id;
+  if (typeof realId !== "string" || realId.length === 0) return null;
+  if (item.kind === "profile") {
+    return `/preferences/project/${encodeURIComponent(realId)}`;
+  }
+  const scope = item.source_kind === "agent_playbook" ? "shared" : "project";
+  return `/skills/${scope}/${encodeURIComponent(realId)}`;
+}
+
+function ruleHrefForCitedItem(item: CitedItem): string | null {
+  if (/^[ps]\d+(?:-[A-Za-z0-9]{1,8})?$/.test(item.id)) {
+    return `/rules/${encodeURIComponent(item.id)}`;
+  }
+  return canonicalHrefForCitedItem(item);
+}
+
+function statKeyForCitedItem(item: CitedItem): string {
+  const realId = item.real_id && item.real_id.length > 0 ? item.real_id : item.id;
+  const sourceKind =
+    item.kind === "profile" ? "profile" : item.source_kind ?? "user_playbook";
+  return `${item.kind}:${sourceKind}:${realId}`;
+}
+
+export async function resolveRuleLink(
+  citationId: string,
+): Promise<RuleResolution | null> {
+  if (!/^[ps]\d+(?:-[A-Za-z0-9]{1,8})?$/.test(citationId)) return null;
+  const dir = stateDir();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return null;
+  }
+  const files = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.endsWith(".injected.jsonl"))
+        .map(async (entry) => {
+          const fullPath = path.join(dir, entry);
+          const stat = await fs.stat(fullPath).catch(() => null);
+          return stat?.isFile() ? { fullPath, mtimeMs: stat.mtimeMs } : null;
+        }),
+    )
+  )
+    .filter((entry): entry is { fullPath: string; mtimeMs: number } => !!entry)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  for (const file of files) {
+    const records = await readInjectedJsonl(file.fullPath).catch(() => []);
+    for (let i = records.length - 1; i >= 0; i--) {
+      const entry = records[i];
+      if (entry.id !== citationId) continue;
+      const href = hrefForInjectedEntry(entry);
+      if (!href) continue;
+      return {
+        id: entry.id,
+        href,
+        title: entry.title || entry.id,
+        kind: entry.kind,
+      };
+    }
+  }
+  return null;
+}
+
+export async function listAppliedRules(
+  opts: AppliedRulesOptions = {},
+): Promise<PlaybookApplicationStat[]> {
+  const daysBack = opts.daysBack ?? 30;
+  const limit = opts.limit ?? 20;
+  const cutoff =
+    daysBack > 0 ? Math.floor(Date.now() / 1000) - daysBack * 24 * 60 * 60 : null;
+  const dir = stateDir();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const stats = new Map<string, PlaybookApplicationStat>();
+  for (const entry of entries) {
+    if (!entry.endsWith(".jsonl") || entry.endsWith(".injected.jsonl")) continue;
+    const fullPath = path.join(dir, entry);
+    const records = await readJsonl(fullPath).catch(() => []);
+    for (let idx = 0; idx < records.length; idx++) {
+      const rec = records[idx];
+      if (
+        rec.role !== "Assistant" ||
+        !rec.cited_items ||
+        rec.cited_items.length === 0
+      ) {
+        continue;
+      }
+      const ts = typeof rec.ts === "number" ? rec.ts : null;
+      if (cutoff !== null && ts !== null && ts < cutoff) continue;
+
+      for (const item of rec.cited_items) {
+        const realId =
+          item.real_id && item.real_id.length > 0 ? item.real_id : item.id;
+        const key = statKeyForCitedItem(item);
+        const prev = stats.get(key);
+        const href = canonicalHrefForCitedItem(item) ?? ruleHrefForCitedItem(item);
+        if (prev) {
+          prev.applied_count += 1;
+          if ((ts ?? 0) >= (prev.last_applied_at ?? 0)) {
+            prev.citation_id = item.id;
+            prev.title = item.title || prev.title;
+            prev.href = href ?? prev.href;
+            prev.last_applied_at = ts;
+            prev.last_interaction_id = idx;
+          }
+          continue;
+        }
+        stats.set(key, {
+          real_id: realId,
+          citation_id: item.id,
+          kind: item.kind,
+          source_kind:
+            item.kind === "profile"
+              ? "profile"
+              : item.source_kind ?? "user_playbook",
+          title: item.title || item.id,
+          href: href ?? undefined,
+          applied_count: 1,
+          last_applied_at: ts,
+          last_interaction_id: idx,
+        });
+      }
+    }
+  }
+
+  return Array.from(stats.values())
+    .sort((a, b) => {
+      if (b.applied_count !== a.applied_count) {
+        return b.applied_count - a.applied_count;
+      }
+      return (b.last_applied_at ?? 0) - (a.last_applied_at ?? 0);
+    })
+    .slice(0, limit);
 }
 
 function foldTurns(records: RawRecord[]): {
@@ -200,13 +408,21 @@ export async function listSessions(): Promise<SessionSummary[]> {
 }
 
 export async function deleteSession(sessionId: string): Promise<boolean> {
-  const file = path.join(stateDir(), `${sessionId}.jsonl`);
-  try {
-    await fs.unlink(file);
-    return true;
-  } catch {
-    return false;
+  const dir = stateDir();
+  const files = [
+    path.join(dir, `${sessionId}.jsonl`),
+    path.join(dir, `${sessionId}.injected.jsonl`),
+  ];
+  let removedAny = false;
+  for (const file of files) {
+    try {
+      await fs.unlink(file);
+      removedAny = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
   }
+  return removedAny;
 }
 
 export async function deleteAllSessions(): Promise<number> {

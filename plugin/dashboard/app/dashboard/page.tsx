@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
@@ -8,6 +8,7 @@ import {
   Sparkles,
   Activity,
   ExternalLink,
+  Users,
 } from "lucide-react";
 import { LearningsBadge } from "@/components/common/learnings-badge";
 import { PageHeader } from "@/components/common/page-header";
@@ -16,15 +17,35 @@ import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
-import { formatRelative, truncateId } from "@/lib/format";
+import { formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
-import type { AgentPlaybook, SessionSummary, UserPlaybook } from "@/lib/types";
+import type {
+  AgentPlaybook,
+  PlaybookApplicationStat,
+  SessionSummary,
+  UserPlaybook,
+  UserProfile,
+} from "@/lib/types";
+
+type RecentLearningKind = "project-skill" | "shared-skill" | "preference";
+
+interface RecentLearning {
+  id: string;
+  kind: RecentLearningKind;
+  href: string;
+  content: string;
+  createdAt: number;
+}
 
 export default function DashboardPage() {
   const { reflexioUrl } = useSettings();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
+  const [preferences, setPreferences] = useState<UserProfile[] | null>(null);
+  const [topApplied, setTopApplied] = useState<PlaybookApplicationStat[] | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,7 +53,7 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, projectRes, sharedRes] = await Promise.all([
+        const [sRes, projectRes, sharedRes, prefRes, statsRes] = await Promise.all([
           fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
           reflexio
             .getUserPlaybooks({ reflexioUrl })
@@ -40,11 +61,24 @@ export default function DashboardPage() {
           reflexio
             .getAgentPlaybooks({ reflexioUrl })
             .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
+          reflexio
+            .getAllProfiles({ reflexioUrl, limit: 100 })
+            .catch(() => ({ user_profiles: [] as UserProfile[] })),
+          fetch("/api/rules/applied?daysBack=30&limit=5", {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
+            .catch(() => ({
+              success: false,
+              stats: [] as PlaybookApplicationStat[],
+            })),
         ]);
         if (cancelled) return;
         setSessions(sRes.sessions ?? []);
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
+        setPreferences(prefRes.user_profiles ?? []);
+        setTopApplied(statsRes.stats ?? []);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "failed to load");
@@ -62,6 +96,42 @@ export default function DashboardPage() {
   const approvedSharedSkills = (sharedSkills ?? []).filter(
     (p) => agentPlaybookStatusLabel(p) === "APPROVED",
   );
+  const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+  const recentLearnings = useMemo(() => {
+    const items: RecentLearning[] = [
+      ...currentProjectSkills.map((p) => ({
+        id: `project:${p.user_playbook_id}`,
+        kind: "project-skill" as const,
+        href: `/skills/project/${encodeURIComponent(p.user_playbook_id)}`,
+        content: p.content,
+        createdAt: p.created_at,
+      })),
+      ...approvedSharedSkills.map((p) => ({
+        id: `shared:${p.agent_playbook_id}`,
+        kind: "shared-skill" as const,
+        href: `/skills/shared/${encodeURIComponent(p.agent_playbook_id)}`,
+        content: p.content,
+        createdAt: p.created_at,
+      })),
+      ...currentPreferences.map((p) => ({
+        id: `preference:${p.profile_id}`,
+        kind: "preference" as const,
+        href: `/preferences/project/${encodeURIComponent(p.profile_id)}`,
+        content: p.content,
+        createdAt: p.last_modified_timestamp,
+      })),
+    ];
+    const seen = new Set<string>();
+    return items
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .filter((item) => {
+        const key = `${item.kind}:${item.content.trim().toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 4);
+  }, [approvedSharedSkills, currentPreferences, currentProjectSkills]);
   const learningInteractionTotal = (sessions ?? []).reduce(
     (acc, s) => acc + s.learning_interaction_count,
     0,
@@ -150,78 +220,154 @@ export default function DashboardPage() {
 
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Recent skills</h2>
-            <Link
-              href="/skills"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-            >
-              View all <ExternalLink className="h-3 w-3" />
-            </Link>
+            <h2 className="text-sm font-semibold">Recent learnings</h2>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/skills"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Skills <ExternalLink className="h-3 w-3" />
+              </Link>
+              <Link
+                href="/preferences"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Preferences <ExternalLink className="h-3 w-3" />
+              </Link>
+            </div>
           </div>
-          {currentProjectSkills.length > 0 || approvedSharedSkills.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {currentProjectSkills.slice(0, 2).map((p) => (
+          {recentLearnings.length > 0 ? (
+            <div className="rounded-xl border border-border divide-y divide-border bg-card">
+              {recentLearnings.map((item) => (
                 <Link
-                  key={`project:${p.user_playbook_id}`}
-                  href={`/skills/project/${p.user_playbook_id}`}
-                  className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
+                  key={item.id}
+                  href={item.href}
+                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
                 >
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <Badge variant="outline" className="font-mono text-[10px]">
-                      {p.agent_version || "default"}
-                    </Badge>
-                    <Badge variant="secondary" className="text-[10px]">
-                      project-specific
-                    </Badge>
-                    <span className="text-[11px] text-muted-foreground">
-                      {formatRelative(p.created_at)}
-                    </span>
-                  </div>
-                  <p className="text-sm line-clamp-3">{p.content}</p>
-                  {p.trigger && (
-                    <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
-                      <span className="font-medium">trigger:</span> {p.trigger}
-                    </p>
-                  )}
-                </Link>
-              ))}
-              {approvedSharedSkills.slice(0, 2).map((p) => (
-                <Link
-                  key={`shared:${p.agent_playbook_id}`}
-                  href={`/skills/shared/${p.agent_playbook_id}`}
-                  className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {p.agent_version || "default"}
-                      </Badge>
-                      <Badge variant="secondary" className="text-[10px]">
-                        shared
-                      </Badge>
+                  <div className="min-w-0 flex items-center gap-3">
+                    {learningIcon(item.kind)}
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">{item.content}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <Badge variant="outline" className="h-5 text-[10px]">
+                          {learningKindLabel(item.kind)}
+                        </Badge>
+                        <span className="text-[11px] text-muted-foreground">
+                          {learningScope(item.kind)}
+                        </span>
+                      </div>
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
-                      {formatRelative(p.created_at)}
-                    </span>
                   </div>
-                  <p className="text-sm line-clamp-3">{p.content}</p>
-                  {p.trigger && (
-                    <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
-                      <span className="font-medium">trigger:</span> {p.trigger}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                    <span>{formatRelative(item.createdAt)}</span>
+                  </div>
                 </Link>
               ))}
             </div>
           ) : (
             <EmptyState
               icon={BookOpen}
-              title="No skills yet"
-              description="Keep using Claude with claude-smart enabled. Skills are extracted automatically when patterns emerge."
+              title="No learnings yet"
+              description="Keep using Claude with claude-smart enabled. Skills and preferences are extracted automatically when patterns emerge."
+            />
+          )}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">
+                Most used claude-smart learnings
+              </h2>
+              <span className="text-[11px] text-muted-foreground">
+                last 30 days
+              </span>
+            </div>
+            <Link
+              href="/sessions"
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            >
+              Review sessions <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
+          {topApplied === null ? (
+            <div className="text-sm text-muted-foreground">Loading...</div>
+          ) : topApplied.length > 0 ? (
+            <div className="rounded-xl border border-border divide-y divide-border bg-card">
+              {topApplied.slice(0, 5).map((s) => {
+                const href = s.href ?? null;
+                const label = appliedRuleLabel(s);
+                const rowBody = (
+                  <>
+                    <div className="min-w-0 flex items-center gap-3">
+                      <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm truncate">
+                          {s.title || (
+                            <span className="text-muted-foreground italic">
+                              (rule removed)
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {label} · {truncate(s.real_id, 12)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                      <Badge variant="secondary" className="text-[10px]">
+                        Used {s.applied_count}×
+                      </Badge>
+                      <span>{formatRelative(s.last_applied_at)}</span>
+                    </div>
+                  </>
+                );
+                return href ? (
+                  <Link
+                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
+                    href={href}
+                    className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                  >
+                    {rowBody}
+                  </Link>
+                ) : (
+                  <div
+                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
+                    className="flex items-center justify-between gap-3 px-4 py-3"
+                  >
+                    {rowBody}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState
+              icon={Sparkles}
+              title="No applied learnings yet"
+              description="When a claude-smart learning is cited in a local assistant response, it will appear here with usage and recency."
             />
           )}
         </section>
       </div>
     </div>
   );
+}
+
+function appliedRuleLabel(stat: PlaybookApplicationStat): string {
+  if (stat.kind === "profile") return "preference";
+  return stat.source_kind === "agent_playbook" ? "shared skill" : "project skill";
+}
+
+function learningScope(kind: RecentLearningKind): string {
+  if (kind === "shared-skill") return "shared";
+  return "project";
+}
+
+function learningIcon(kind: RecentLearningKind) {
+  const Icon = kind === "preference" ? Users : BookOpen;
+  return <Icon className="h-4 w-4 text-muted-foreground shrink-0" />;
+}
+
+function learningKindLabel(kind: RecentLearningKind): string {
+  return kind === "preference" ? "preference" : "skill";
 }

@@ -221,7 +221,8 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
     instruction = cs_cite.CITATION_INSTRUCTION
 
     assert "Do not call a shell command" in instruction
-    assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in instruction
+    assert "✨ claude-smart rule applied:" in instruction
+    assert "claude-smart citations" in instruction
 
 
 def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> None:
@@ -620,7 +621,14 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     assert "plugin_hooks = true" in text
     assert '[plugins."browser@openai-bundled"]' in text
     assert "[marketplaces.openai-bundled]" in text
-    assert "plugin and marketplace state removed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "plugin and marketplace state removed" in out
+    assert "Local data was kept" in out
+    assert "learned rules, sessions, logs, and local Reflexio data" in out
+    assert "Delete them only if you want a full reset" in out
+    assert "~/.claude-smart" in out
+    assert "~/.reflexio" in out
+    assert "rm -rf ~/.claude-smart ~/.reflexio" in out
 
 
 def test_set_codex_hook_states_replaces_only_claude_smart_hooks(tmp_path) -> None:
