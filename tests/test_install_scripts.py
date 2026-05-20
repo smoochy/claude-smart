@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
+SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
@@ -255,6 +255,14 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
     assert "if claude_smart_is_internal_invocation_env; then" in dashboard
 
 
+def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
+    script = SETUP_LOCAL_DEV.read_text()
+
+    assert "claude plugin update -s user claude-smart@reflexioai-local" in script
+    assert "claude plugin install -s user claude-smart@reflexioai-local" in script
+    assert "installing/updating claude-smart@reflexioai-local" in script
+
+
 def test_backend_service_configures_shared_embedding_daemon() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
@@ -427,6 +435,48 @@ def test_node_installer_platform_preflight_messages() -> None:
             check=True,
         )
         assert expected in result.stdout.strip()
+
+
+def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "const root = installer.copyCodexMarketplace();"
+        "const pluginRoot = installer.codexMarketplacePluginRoot(root);"
+        "const fs = require('fs');"
+        "const path = require('path');"
+        "const manifest = JSON.parse(fs.readFileSync(path.join(root, '.agents/plugins/marketplace.json'), 'utf8'));"
+        "console.log(JSON.stringify({"
+        "root,"
+        "path: manifest.plugins[0].source.path,"
+        "pluginRoot,"
+        "hasManifest: fs.existsSync(path.join(pluginRoot, '.codex-plugin/plugin.json')),"
+        "legacyPathExists: fs.existsSync(path.join(root, 'plugins/claude-smart'))"
+        "}));"
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["path"] == "./plugin"
+    assert payload["pluginRoot"] == str(
+        tmp_path / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+    )
+    assert payload["hasManifest"] is True
+    assert payload["legacyPathExists"] is False
 
 
 def test_node_installer_does_not_treat_global_node_as_private_runtime(
@@ -771,6 +821,59 @@ def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"continue": True}
     assert log.stat().st_size <= 10_000_000
+
+
+def test_codex_hook_post_tool_fallback_omits_suppress_output(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = ""
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "hook", "post-tool"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "tool_name": "Bash"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
+
+
+def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(bin_dir)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "hook", "post-tool"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "tool_name": "Bash"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
 
 
 def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:
