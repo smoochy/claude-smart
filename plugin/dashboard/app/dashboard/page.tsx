@@ -177,32 +177,40 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <section>
+        <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Recent sessions</h2>
+            <div>
+              <h2 className="text-sm font-semibold">Recent sessions</h2>
+              <p className="text-xs text-muted-foreground">
+                Latest local buffers and cited learnings.
+              </p>
+            </div>
             <Link
               href="/sessions"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
             >
               View all <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
           {sessions && sessions.length > 0 ? (
-            <div className="rounded-xl border border-border divide-y divide-border bg-card">
+            <div className="rounded-lg border border-border divide-y divide-border bg-background/70 overflow-hidden">
               {sessions.slice(0, 5).map((s) => (
                 <Link
                   key={s.session_id}
                   href={`/sessions/${s.session_id}`}
-                  className="flex items-center justify-between px-4 py-3 hover:bg-accent/40 transition-colors"
+                  className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="min-w-0 flex items-center gap-3">
-                    <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="min-w-0 flex w-full items-center gap-3">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                      <MessageSquare className="h-4 w-4" />
+                    </span>
                     <code className="font-mono text-xs truncate">
                       {truncateId(s.session_id, 10, 6)}
                     </code>
                     <LearningsBadge count={s.learning_interaction_count} />
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
+                  <div className="flex w-full items-center justify-end gap-4 text-xs text-muted-foreground sm:w-auto sm:shrink-0">
                     <span>{s.turn_count} turns</span>
                     <span>{formatRelative(s.last_activity)}</span>
                   </div>
@@ -218,35 +226,40 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section>
+        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Recent learnings</h2>
+            <div>
+              <h2 className="text-sm font-semibold">Recent learnings</h2>
+              <p className="text-xs text-muted-foreground">
+                New skills and preferences extracted from recent patterns.
+              </p>
+            </div>
             <div className="flex items-center gap-3">
               <Link
                 href="/skills"
-                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
               >
                 Skills <ExternalLink className="h-3 w-3" />
               </Link>
               <Link
                 href="/preferences"
-                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
               >
                 Preferences <ExternalLink className="h-3 w-3" />
               </Link>
             </div>
           </div>
           {recentLearnings.length > 0 ? (
-            <div className="rounded-xl border border-border divide-y divide-border bg-card">
+            <div className="rounded-lg border border-border divide-y divide-border bg-background/70 overflow-hidden">
               {recentLearnings.map((item) => (
                 <Link
                   key={item.id}
                   href={item.href}
-                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                  className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/45"
                 >
-                  <div className="min-w-0 flex items-center gap-3">
+                  <div className="min-w-0 flex flex-1 items-center gap-3">
                     {learningIcon(item.kind)}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm truncate">{item.content}</p>
                       <div className="mt-1 flex items-center gap-2">
                         <Badge variant="outline" className="h-5 text-[10px]">
@@ -273,7 +286,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section>
+        <section className="min-w-0 lg:col-span-2">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-semibold">
@@ -299,9 +312,9 @@ export default function DashboardPage() {
                 const label = appliedRuleLabel(s);
                 const rowBody = (
                   <>
-                    <div className="min-w-0 flex items-center gap-3">
+                    <div className="min-w-0 flex flex-1 items-center gap-3">
                       <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="text-sm truncate">
                           {s.title || (
                             <span className="text-muted-foreground italic">
@@ -326,14 +339,14 @@ export default function DashboardPage() {
                   <Link
                     key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
                     href={href}
-                    className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
                   >
                     {rowBody}
                   </Link>
                 ) : (
                   <div
                     key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
-                    className="flex items-center justify-between gap-3 px-4 py-3"
+                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3"
                   >
                     {rowBody}
                   </div>
@@ -348,6 +361,7 @@ export default function DashboardPage() {
             />
           )}
         </section>
+        </div>
       </div>
     </div>
   );
