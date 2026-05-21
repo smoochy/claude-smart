@@ -66,9 +66,9 @@ _RAW_DASHBOARD_URL_RE = re.compile(
 )
 
 _COMPACT_INTRO = (
-    "_If you use any listed `[cs:…]` item to answer, you must end with one "
-    "final marker line. Skip the marker only when no listed item affected the "
-    "answer."
+    "_If you use any listed `[cs:…]` item to answer and it materially changes "
+    "your answer, you must end with one final marker line. Skip the marker "
+    "only when no listed item affected the answer."
 )
 
 _MARKDOWN_MARKER_PARAGRAPH = (

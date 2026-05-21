@@ -39,9 +39,6 @@ export function TopBar() {
         </div>
         <div className="hidden min-w-0 sm:block">
           <div className="text-sm font-semibold leading-5">Claude-Smart</div>
-          <div className="text-[11px] text-muted-foreground leading-4">
-            memory workbench
-          </div>
         </div>
         <div className="mx-2 h-8 w-px bg-border hidden md:block" />
         <label
