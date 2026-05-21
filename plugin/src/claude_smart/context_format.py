@@ -106,6 +106,9 @@ def render_with_registry(
     )
     if instruction:
         sections.append(instruction)
+    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    if exact_osc8_marker:
+        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -182,6 +185,9 @@ def render_inline_with_registry(
     )
     if instruction:
         sections.append(instruction)
+    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    if exact_osc8_marker:
+        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -208,7 +214,8 @@ def render_inline_compact_with_registry(
     if not entries:
         return "", []
 
-    item_parts = []
+    skill_parts = []
+    preference_parts = []
     marker_parts = []
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     for entry in entries:
@@ -217,18 +224,26 @@ def render_inline_compact_with_registry(
         rule_url = str(entry.get("rule_url") or "")
         if link_style == "osc8" and rule_url:
             linked_title = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
-            item = linked_title
-            if content != title:
-                item += f": {content}"
-            marker_parts.append(f"✨ claude-smart rule applied: {linked_title}")
+            item = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(content))
+            marker_parts.append(linked_title)
         else:
             item = f"{content} (title: {title}"
             if rule_url:
                 item += f"; open: {rule_url}"
             item += ")"
-        item_parts.append(item)
+        if entry.get("kind") == "profile":
+            preference_parts.append(item)
+        else:
+            skill_parts.append(item)
 
-    sections = [f"claude-smart: using relevant memory: {'; '.join(item_parts)}."]
+    memory_sections = []
+    if skill_parts:
+        label = "Skill" if len(skill_parts) == 1 else "Skills"
+        memory_sections.append(f"{label}: {'; '.join(skill_parts)}")
+    if preference_parts:
+        label = "Preference" if len(preference_parts) == 1 else "Preferences"
+        memory_sections.append(f"{label}: {'; '.join(preference_parts)}")
+    sections = [f"claude-smart: using relevant memory. {'. '.join(memory_sections)}."]
     instruction = _compact_citation_instruction(marker_parts)
     if instruction:
         sections.append(instruction)
@@ -240,10 +255,16 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         return ""
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = marker_parts[0] if len(marker_parts) == 1 else "; ".join(marker_parts)
+        marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+        separator_instruction = (
+            " Separate multiple linked memories with the visible ` | ` separator."
+            if len(marker_parts) > 1
+            else ""
+        )
         return (
             f"If used, copy this final marker exactly, preserving its hidden "
-            f"OSC 8 terminal link: `{marker}`. Skip when unrelated."
+            f"OSC 8 terminal link: `{marker}`.{separator_instruction} "
+            f"Skip when unrelated."
         )
     if link_style == "osc8":
         return (
@@ -256,6 +277,32 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         "with one final marker like `✨ claude-smart rule applied: "
         "[verify process state](http://localhost:3001/rules/s1-123)` using "
         "the shown rule URL; skip the marker when unrelated."
+    )
+
+
+def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
+    if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
+        return ""
+    if os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown") != "osc8":
+        return ""
+
+    marker_parts = []
+    for entry in entries:
+        rule_url = str(entry.get("rule_url") or "")
+        if not rule_url:
+            continue
+        title = _one_line(str(entry.get("title") or entry["content"]))
+        marker_parts.append(
+            _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
+        )
+    if not marker_parts:
+        return ""
+
+    marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+    return (
+        "If any listed memory above was used, copy this exact final marker, "
+        f"preserving its hidden OSC 8 terminal links: `{marker}`. "
+        "Do not rename, summarize, or regroup the linked titles."
     )
 
 
