@@ -309,6 +309,17 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "installing/updating claude-smart@reflexioai-local" in script
 
 
+def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
+    script = SETUP_LOCAL_DEV.read_text()
+
+    assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
+    assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
+    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' in script
+    assert "using Reflexio source at $REFLEXIO_ABS" in script
+    assert "override_learning_stall" in script
+    assert "selected Reflexio client does not support" in script
+
+
 def test_backend_service_configures_shared_embedding_daemon() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
@@ -452,6 +463,49 @@ def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
     assert 'bash "$HERE/backend-service.sh" start' in script
     assert 'bash "$HERE/dashboard-service.sh" start' in script
+
+
+def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
+        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
+        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
+    result = subprocess.run(
+        [str(HOOK_ENTRY), "codex", "user-prompt"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
+
+    env["CLAUDE_SMART_CITATION_LINK_STYLE"] = "markdown"
+    result = subprocess.run(
+        [str(HOOK_ENTRY), "codex", "user-prompt"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
 
 
 def test_node_installer_platform_preflight_messages() -> None:
@@ -920,6 +974,41 @@ def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"continue": True}
+
+
+def test_codex_hook_defaults_citation_links_to_osc8(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
+        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
+        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(bin_dir)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "hook", "user-prompt"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
+    assert parsed["continue"] is True
 
 
 def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:
