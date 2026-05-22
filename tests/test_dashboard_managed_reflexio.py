@@ -58,14 +58,16 @@ def test_dashboard_proxy_forwards_bearer_auth_without_client_auth() -> None:
     assert 'apiKey: configuredBase ? apiKey : ""' in route
 
 
-def test_dashboard_settings_adopt_managed_reflexio_url() -> None:
+def test_dashboard_settings_loads_config_before_fallback() -> None:
     settings = (
         REPO_ROOT / "plugin" / "dashboard" / "hooks" / "use-settings.tsx"
     ).read_text()
 
     assert 'fetch("/api/config", { cache: "no-store" })' in settings
     assert "REFLEXIO_URL?: string" in settings
-    assert "function isLocalUrl" in settings
-    assert "!isLocalUrl(configuredUrl)" in settings
-    assert "isLocalUrl(settings.reflexioUrl)" in settings
-    assert "writeStorage({ reflexioUrl: configuredUrl })" in settings
+    assert 'useState<string>("")' in settings
+    assert "setReflexioUrlState(fromEnv || FALLBACK_URL)" in settings
+    assert "if (!res.ok)" in settings
+    assert "setReflexioUrlState(FALLBACK_URL)" in settings
+    assert "function isLocalUrl" not in settings
+    assert "writeStorage" not in settings

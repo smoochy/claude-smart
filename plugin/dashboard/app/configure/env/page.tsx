@@ -134,7 +134,8 @@ export default function ConfigureEnvPage() {
           <div>
             <h2 className="text-sm font-semibold">Dashboard</h2>
             <p className="text-xs text-muted-foreground">
-              Stored in browser localStorage — only affects this UI.
+              Session-only override — defaults to REFLEXIO_URL below; clears on
+              page refresh.
             </p>
           </div>
           <div className="space-y-2">

@@ -30,6 +30,7 @@ export function useStallState(): StallState | null {
 
   useEffect(() => {
     let cancelled = false;
+    if (!reflexioUrl) return;
     const base = reflexioUrl.replace(/\/$/, "");
 
     const tick = async () => {
