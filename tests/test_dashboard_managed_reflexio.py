@@ -16,7 +16,9 @@ def test_dashboard_config_knows_reflexio_api_key() -> None:
     ).read_text()
 
     assert '"REFLEXIO_API_KEY"' in config
+    assert '"REFLEXIO_USER_ID"' in config
     assert "REFLEXIO_API_KEY: string;" in types
+    assert "REFLEXIO_USER_ID: string;" in types
     assert "REFLEXIO_API_KEY_SET?: boolean;" in types
     assert "<Label>REFLEXIO_API_KEY</Label>" in page
     assert 'type="password"' in page

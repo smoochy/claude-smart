@@ -42,6 +42,13 @@ Install for Codex:
 npx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
 ```
 
+Refresh an existing Claude Code install and apply the same managed
+configuration:
+
+```bash
+npx claude-smart update --api-key "$REFLEXIO_API_KEY"
+```
+
 The default managed URL is:
 
 ```text
@@ -66,10 +73,12 @@ Managed setup writes these values to `~/.reflexio/.env`:
 ```env
 REFLEXIO_URL="https://www.reflexio.ai/"
 REFLEXIO_API_KEY="rflx-your-api-key"
+REFLEXIO_USER_ID="7f1a5bb4-6a63-42ec-a74c-1f2a89e16e3a"
 ```
 
 The file is written with mode `0600`. Unknown keys, comments, and unrelated
-settings are preserved.
+settings are preserved. `REFLEXIO_USER_ID` is generated once and reused so
+managed publishes are scoped to the user instead of the current project name.
 
 Local setup still writes only the local-mode flags:
 
@@ -78,8 +87,8 @@ CLAUDE_SMART_USE_LOCAL_CLI=1
 CLAUDE_SMART_USE_LOCAL_EMBEDDING=1
 ```
 
-`REFLEXIO_URL` and `REFLEXIO_API_KEY` are written only when `--api-key` is
-provided.
+`REFLEXIO_URL`, `REFLEXIO_API_KEY`, and `REFLEXIO_USER_ID` are written only
+when `--api-key` is provided.
 
 ## Verify Managed Access
 
@@ -125,7 +134,7 @@ Open the dashboard the same way as local mode:
 - Codex: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
 
 The dashboard Environment page can view or update `REFLEXIO_URL` and
-`REFLEXIO_API_KEY`.
+`REFLEXIO_API_KEY`. `REFLEXIO_USER_ID` is preserved in the env file.
 
 ## Citation Links
 
@@ -145,6 +154,7 @@ Edit `~/.reflexio/.env` and remove:
 ```env
 REFLEXIO_URL=...
 REFLEXIO_API_KEY=...
+REFLEXIO_USER_ID=...
 ```
 
 Then make sure the local flags are present:

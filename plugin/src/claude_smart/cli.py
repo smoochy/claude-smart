@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -144,13 +145,50 @@ def _seed_reflexio_env() -> list[str]:
 
 def _seed_managed_reflexio_env(*, api_key: str, reflexio_url: str) -> list[str]:
     """Write managed Reflexio connection settings to ``~/.reflexio/.env``."""
+    user_id = _read_reflexio_env_value(env_config.REFLEXIO_USER_ID_ENV) or str(
+        uuid.uuid4()
+    )
     return env_config.set_env_vars(
         _REFLEXIO_ENV_PATH,
         {
             env_config.REFLEXIO_URL_ENV: reflexio_url,
             env_config.REFLEXIO_API_KEY_ENV: api_key,
+            env_config.REFLEXIO_USER_ID_ENV: user_id,
         },
     )
+
+
+def _read_reflexio_env_value(key: str) -> str:
+    try:
+        text = _REFLEXIO_ENV_PATH.read_text()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        parsed = env_config.parse_env_line(line)
+        if parsed is None:
+            continue
+        parsed_key, value = parsed
+        if parsed_key == key:
+            return value
+    return ""
+
+
+def _semver_tuple(path: Path) -> tuple[int, int, int] | None:
+    parts = path.name.split(".", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        patch = parts[2].split("-", 1)[0].split("+", 1)[0]
+        return (int(parts[0]), int(parts[1]), int(patch))
+    except ValueError:
+        return None
+
+
+def _installed_plugin_sort_key(path: Path) -> tuple[int, int, int, int, float]:
+    version = _semver_tuple(path)
+    if version is not None:
+        return (1, *version, path.stat().st_mtime)
+    return (0, 0, 0, 0, path.stat().st_mtime)
 
 
 def _find_claude_code_plugin_root() -> Path | None:
@@ -172,7 +210,7 @@ def _find_claude_code_plugin_root() -> Path | None:
                 and (child / "scripts" / "smart-install.sh").is_file()
             ):
                 candidates.append(child)
-    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    candidates.sort(key=_installed_plugin_sort_key, reverse=True)
     candidates.extend(
         [
             Path.home()
@@ -797,6 +835,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
             "error: 'uv' not found on PATH. Install uv or restart your shell.\n"
         )
         return 1
+    _configure_reflexio_setup(args)
 
     missing = _missing_codex_marketplace_files(_REPO_ROOT)
     if missing:
@@ -807,8 +846,6 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
         )
         return 1
     marketplace_root = _prepare_codex_local_marketplace()
-
-    _configure_reflexio_setup(args)
 
     hooks_ok, hooks_msg = _enable_codex_plugin_hooks()
     if hooks_ok:
@@ -899,6 +936,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Install Claude Code first: https://claude.com/claude-code\n"
         )
         return 1
+    _configure_reflexio_setup(args)
 
     for cmd in (
         ["claude", "plugin", "marketplace", "add", args.source],
@@ -909,8 +947,6 @@ def cmd_install(args: argparse.Namespace) -> int:
         except subprocess.CalledProcessError as exc:
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
-
-    _configure_reflexio_setup(args)
 
     bootstrapped, message = _bootstrap_claude_code_install()
     if not bootstrapped:
@@ -930,7 +966,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_update(_args: argparse.Namespace) -> int:
+def cmd_update(args: argparse.Namespace) -> int:
     """Update claude-smart to the latest version via the native plugin CLI.
 
     Runs ``claude plugin update claude-smart@reflexioai``.
@@ -956,6 +992,8 @@ def cmd_update(_args: argparse.Namespace) -> int:
         return exc.returncode or 1
 
     sys.stdout.write("\nclaude-smart updated. Restart Claude Code to apply.\n")
+    if getattr(args, "api_key", ""):
+        _configure_reflexio_setup(args)
     return 0
 
 
@@ -1744,6 +1782,16 @@ def _build_parser() -> argparse.ArgumentParser:
     inst.set_defaults(func=cmd_install)
 
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
+    upd.add_argument(
+        "--api-key",
+        default="",
+        help="Configure managed Reflexio with this API key after updating",
+    )
+    upd.add_argument(
+        "--reflexio-url",
+        default=_MANAGED_REFLEXIO_URL,
+        help="Managed Reflexio URL used only when --api-key is provided",
+    )
     upd.set_defaults(func=cmd_update)
 
     uni = sub.add_parser("uninstall", help="Remove claude-smart")

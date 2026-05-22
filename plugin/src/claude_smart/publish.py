@@ -29,9 +29,9 @@ def publish_unpublished(
 
     Args:
         session_id (str): Claude Code session id, attached to each interaction.
-        project_id (str): Stable project name; used as reflexio's
-            ``user_id`` (preferences) so preferences accumulate at the project
-            level across sessions. ``agent_version`` is hardcoded to
+        project_id (str): Stable user-scope id resolved by ``ids``. Local mode
+            uses the project name; managed/API-key mode uses the persisted
+            ``REFLEXIO_USER_ID`` UUID. ``agent_version`` is hardcoded to
             ``"claude-code"`` in the adapter so skills roll up
             globally per agent rather than per project.
         force_extraction (bool): Whether to ask reflexio to run extraction

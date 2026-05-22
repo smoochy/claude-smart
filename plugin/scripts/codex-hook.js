@@ -183,6 +183,7 @@ function loadReflexioEnv() {
   const allowed = new Set([
     "REFLEXIO_URL",
     "REFLEXIO_API_KEY",
+    "REFLEXIO_USER_ID",
     "CLAUDE_SMART_USE_LOCAL_CLI",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     "CLAUDE_SMART_BACKEND_AUTOSTART",

@@ -39,6 +39,7 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
+const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -256,6 +257,25 @@ function setReflexioEnvVars(values) {
   return added;
 }
 
+function readReflexioEnvValue(key) {
+  const existing = existsSync(REFLEXIO_ENV_PATH)
+    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
+    : "";
+  for (const line of existing.split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (!parsed || parsed.key !== key) continue;
+    let value = line.slice(line.indexOf("=") + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return "";
+}
+
 function maskSecret(value) {
   if (!value) return "";
   if (value.length <= 8) return "*".repeat(value.length);
@@ -267,9 +287,11 @@ function configureReflexioSetup(args) {
   const apiKey = parseOptionalArg(args, "--api-key").trim();
   if (apiKey) {
     const reflexioUrl = parseOptionalArg(args, "--reflexio-url") || MANAGED_REFLEXIO_URL;
+    const userId = readReflexioEnvValue(REFLEXIO_USER_ID_ENV) || crypto.randomUUID();
     const added = setReflexioEnvVars({
       REFLEXIO_URL: reflexioUrl,
       REFLEXIO_API_KEY: apiKey,
+      [REFLEXIO_USER_ID_ENV]: userId,
     });
     const changed = added.length > 0 ? added.join(", ") : "managed Reflexio settings";
     process.stdout.write(
@@ -302,6 +324,8 @@ function findClaudeCodePluginRoot() {
     // Fall through to marketplace/package fallbacks.
   }
   candidates.sort((a, b) => {
+    const versionCompare = compareSemverLikePathNames(b, a);
+    if (versionCompare !== 0) return versionCompare;
     try {
       return statSync(b).mtimeMs - statSync(a).mtimeMs;
     } catch {
@@ -321,6 +345,27 @@ function findClaudeCodePluginRoot() {
     }
   }
   return null;
+}
+
+function semverLikePathName(path) {
+  const base = String(path).split(/[\\/]/).pop() || "";
+  const match = base.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!match) return null;
+  return match.slice(1).map((part) => Number.parseInt(part, 10));
+}
+
+function compareSemverLikePathNames(a, b) {
+  const av = semverLikePathName(a);
+  const bv = semverLikePathName(b);
+  if (av && bv) {
+    for (let i = 0; i < 3; i += 1) {
+      if (av[i] !== bv[i]) return av[i] - bv[i];
+    }
+    return 0;
+  }
+  if (av) return 1;
+  if (bv) return -1;
+  return 0;
 }
 
 function forcePluginRoot(pluginRoot) {
@@ -808,7 +853,7 @@ function printHelp() {
       `  2. claude plugin install ${PLUGIN_SPEC}`,
       "  3. Appends CLAUDE_SMART_USE_LOCAL_CLI=1 and CLAUDE_SMART_USE_LOCAL_EMBEDDING=1",
       "     to ~/.reflexio/.env (idempotent).",
-      "     Passing --api-key writes REFLEXIO_URL and REFLEXIO_API_KEY instead.",
+      "     Passing --api-key writes REFLEXIO_URL, REFLEXIO_API_KEY, and REFLEXIO_USER_ID instead.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
@@ -821,6 +866,7 @@ function printHelp() {
       "",
       "Update:",
       "  npx claude-smart update                        Update to the latest version",
+      "  npx claude-smart update --api-key <key>        Update and configure managed Reflexio",
       "",
       "Uninstall:",
       "  npx claude-smart uninstall                     Remove the plugin from Claude Code",
@@ -1246,7 +1292,7 @@ function installCodexPluginCache(pluginRoot) {
   return cacheDir;
 }
 
-async function runUpdate() {
+async function runUpdate(args) {
   if (!hasClaudeCli()) {
     process.stderr.write(
       "error: 'claude' CLI not found on PATH. " +
@@ -1264,6 +1310,7 @@ async function runUpdate() {
   }
 
   process.stdout.write("\nclaude-smart updated. Restart Claude Code to apply.\n");
+  if (args.includes("--api-key")) configureReflexioSetup(args);
 }
 
 async function runUninstall(args) {
@@ -1316,6 +1363,8 @@ async function runInstall(args) {
   }
 
   const source = parseSource(args);
+  configureReflexioSetup(args);
+
   const steps = [
     { args: ["plugin", "marketplace", "add", source], label: "Adding marketplace…" },
     { args: ["plugin", "install", PLUGIN_SPEC], label: "Installing claude-smart…" },
@@ -1331,7 +1380,6 @@ async function runInstall(args) {
     }
   }
 
-  configureReflexioSetup(args);
   try {
     const pluginRoot = await bootstrapClaudeCodeInstall();
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
@@ -1364,6 +1412,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
+  configureReflexioSetup(args);
 
   const marketplaceRoot = copyCodexMarketplace();
   process.stdout.write(`Prepared Codex marketplace at ${marketplaceRoot}.\n`);
@@ -1406,7 +1455,6 @@ async function runInstallCodex(args) {
   try {
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
-    configureReflexioSetup(args);
     await bootstrapPluginRuntime(cacheDir);
     if (refreshDashboardService(cacheDir)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
@@ -1496,7 +1544,7 @@ async function main() {
   }
 
   if (cmd === "update") {
-    await runUpdate();
+    await runUpdate(args.slice(1));
     return;
   }
 

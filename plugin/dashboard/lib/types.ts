@@ -114,6 +114,7 @@ export interface SessionDetail {
 export interface ClaudeSmartConfig {
   REFLEXIO_URL: string;
   REFLEXIO_API_KEY: string;
+  REFLEXIO_USER_ID: string;
   REFLEXIO_API_KEY_SET?: boolean;
   CLAUDE_SMART_USE_LOCAL_CLI: boolean;
   CLAUDE_SMART_USE_LOCAL_EMBEDDING: boolean;

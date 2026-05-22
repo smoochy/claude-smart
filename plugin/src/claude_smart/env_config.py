@@ -9,6 +9,7 @@ REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
+REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID"
 
 
 def parse_env_line(line: str) -> tuple[str, str] | None:

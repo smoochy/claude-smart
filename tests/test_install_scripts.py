@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -274,6 +275,7 @@ def test_smart_install_keeps_local_flags_local_mode_only() -> None:
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
     assert "claude_smart_source_reflexio_env" in script
+    assert "REFLEXIO_USER_ID" in (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
 
 def test_node_installer_supports_managed_reflexio_setup() -> None:
@@ -283,8 +285,107 @@ def test_node_installer_supports_managed_reflexio_setup() -> None:
     assert 'parseOptionalArg(args, "--api-key")' in installer
     assert 'parseOptionalArg(args, "--reflexio-url")' in installer
     assert "REFLEXIO_API_KEY" in installer
+    assert "REFLEXIO_USER_ID" in installer
     assert "configureReflexioSetup(args)" in installer
     assert "maskSecret(apiKey)" in installer
+
+
+def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    cache_root = (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+    )
+    for version in ("0.2.31", "0.2.32"):
+        plugin_root = cache_root / version
+        scripts = plugin_root / "scripts"
+        scripts.mkdir(parents=True)
+        (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+        install = scripts / "smart-install.sh"
+        install.write_text("#!/bin/sh\nprintf 'bootstrapped %s\\n' \"$PWD\"\n")
+        install.chmod(install.stat().st_mode | stat.S_IXUSR)
+
+    old_root = cache_root / "0.2.31"
+    new_root = cache_root / "0.2.32"
+    old_mtime = new_root.stat().st_mtime + 100
+    os.utime(old_root, (old_mtime, old_mtime))
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    claude = fake_bin / "claude"
+    claude.write_text(
+        "#!/bin/sh\n"
+        "printf 'claude %s\\n' \"$*\" >> \"$HOME/claude.log\"\n"
+        "exit 0\n"
+    )
+    claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "install", "--api-key", "rflx-test-secret"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Configured" in result.stdout
+    assert f"Prepared claude-smart runtime at {new_root}" in result.stdout
+    env_text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
+    assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
+    assert re.search(
+        r'REFLEXIO_USER_ID="[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"',
+        env_text,
+    )
+    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == new_root
+
+
+def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    claude = fake_bin / "claude"
+    claude.write_text(
+        "#!/bin/sh\n"
+        "printf 'claude %s\\n' \"$*\" >> \"$HOME/claude.log\"\n"
+        "exit 0\n"
+    )
+    claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "update", "--api-key", "rflx-test-secret"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "claude-smart updated" in result.stdout
+    assert "Configured" in result.stdout
+    env_text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
+    assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
+    assert "REFLEXIO_USER_ID=" in env_text
 
 
 def test_dashboard_service_loads_reflexio_env_for_managed_proxy() -> None:
