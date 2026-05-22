@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from claude_smart import hook, hook_log
 
 
@@ -27,11 +26,7 @@ def hook_log_path(tmp_path, monkeypatch) -> Path:
 def _read_lines(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    return [
-        json.loads(line)
-        for line in path.read_text().splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # -----------------------------------------------------------------------------
@@ -116,6 +111,23 @@ def test_log_path_honors_env_override(tmp_path, monkeypatch) -> None:
     assert _read_lines(target)[0]["event"] == "stop"
 
 
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", " yes ", "On", "  "])
+def test_log_path_treats_boolean_env_as_default(
+    hook_log_path, monkeypatch, raw: str
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", raw)
+    hook_log.log_event(event="stop", host="claude-code")
+    assert _read_lines(hook_log_path)[0]["event"] == "stop"
+
+
+def test_log_path_trims_env_override_path(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "override.log"
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", f"  {target}  ")
+    hook_log.log_event(event="stop", host="claude-code")
+    assert target.is_file()
+    assert _read_lines(target)[0]["event"] == "stop"
+
+
 # -----------------------------------------------------------------------------
 # hook.main dispatcher → log records
 # -----------------------------------------------------------------------------
@@ -182,6 +194,41 @@ def test_dispatcher_logs_publish_outcome_from_stop(
     assert rec["handler_status"] == "ok"
     assert rec["publish_status"] == "ok"
     assert rec["publish_count"] == 3
+
+
+@pytest.mark.parametrize("cwd_key", ["workingDirectory", "currentWorkingDirectory"])
+def test_dispatcher_normalizes_desktop_payload_keys(
+    hook_log_path, stdin_payload, monkeypatch, cwd_key: str
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def stop_ok(payload: dict[str, Any]) -> tuple[str, int]:
+        seen.update(payload)
+        return ("ok", 1)
+
+    monkeypatch.setattr(hook, "_load_handlers", lambda: {"stop": stop_ok})
+    stdin_payload(
+        {
+            "sessionId": "s_desktop",
+            "transcriptPath": "/tmp/transcript.jsonl",
+            "toolName": "Bash",
+            "toolInput": {"command": "pytest"},
+            "toolResponse": {"ok": True},
+            "lastAssistantMessage": "done",
+            cwd_key: "/tmp/project",
+        }
+    )
+    hook.main(["claude-code", "stop"])
+
+    assert seen["session_id"] == "s_desktop"
+    assert seen["transcript_path"] == "/tmp/transcript.jsonl"
+    assert seen["tool_name"] == "Bash"
+    assert seen["tool_input"] == {"command": "pytest"}
+    assert seen["tool_response"] == {"ok": True}
+    assert seen["last_assistant_message"] == "done"
+    assert seen["cwd"] == "/tmp/project"
+    rec = _read_lines(hook_log_path)[0]
+    assert rec["session_id"] == "s_desktop"
 
 
 def test_dispatcher_logs_nothing_publish_status(
@@ -333,9 +380,7 @@ def test_log_rotates_when_over_max_bytes(hook_log_path, monkeypatch) -> None:
     assert "sess-0000" not in session_ids
 
 
-def test_log_does_not_rotate_when_under_max_bytes(
-    hook_log_path, monkeypatch
-) -> None:
+def test_log_does_not_rotate_when_under_max_bytes(hook_log_path, monkeypatch) -> None:
     """A single small record never triggers rotation; bytes are byte-stable
     across subsequent reads."""
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 5 * 1024 * 1024)
@@ -351,9 +396,7 @@ def test_log_does_not_rotate_when_under_max_bytes(
     assert _read_lines(hook_log_path) == snapshot_records
 
 
-def test_log_rotation_preserves_jsonl_framing(
-    hook_log_path, monkeypatch
-) -> None:
+def test_log_rotation_preserves_jsonl_framing(hook_log_path, monkeypatch) -> None:
     """After rotation, every surviving line parses as JSON — no record is
     split mid-byte by the cut."""
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 400)
@@ -375,9 +418,7 @@ def test_log_rotation_preserves_jsonl_framing(
         assert parsed["event"] == "user-prompt"
 
 
-def test_log_rotation_tolerates_read_failure(
-    hook_log_path, monkeypatch
-) -> None:
+def test_log_rotation_tolerates_read_failure(hook_log_path, monkeypatch) -> None:
     """If the rotation read fails (disk error, EACCES, etc.) ``log_event``
     must still return cleanly — hook fires are never aborted by logging."""
     # Prime the file at the default (large) cap so the prime write itself
