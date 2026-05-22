@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.36",
+  "version": "0.2.37",
   "description": "Self-improving Claude Code plugin — learns from corrections across sessions via reflexio",
   "author": {
     "name": "Yi Lu"
