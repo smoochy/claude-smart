@@ -33,20 +33,58 @@ export REFLEXIO_API_KEY="rflx-your-api-key"
 Install for Claude Code:
 
 ```bash
-npx claude-smart install --api-key "$REFLEXIO_API_KEY"
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart install --api-key "$REFLEXIO_API_KEY"
+```
+
+Or, if you use uv:
+
+```bash
+uvx claude-smart install --api-key "$REFLEXIO_API_KEY"
 ```
 
 Install for Codex:
 
 ```bash
-npx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
+```
+
+Or, if you use uv:
+
+```bash
+uvx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
 ```
 
 Refresh an existing Claude Code install and apply the same managed
 configuration:
 
 ```bash
-npx claude-smart update --api-key "$REFLEXIO_API_KEY"
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart update --api-key "$REFLEXIO_API_KEY"
+```
+
+Or, if you use uv:
+
+```bash
+uvx claude-smart update --api-key "$REFLEXIO_API_KEY"
+```
+
+Use `npm exec --package claude-smart@latest -- claude-smart ...` for managed
+installs instead of bare `npx claude-smart ...`. Bare `npx` can resolve a stale
+cached or globally installed wrapper, even when the Claude Code plugin cache
+it installs is newer.
+
+Managed install output must include:
+
+```text
+Configured ~/.reflexio/.env for managed Reflexio
+```
+
+If the output says this instead, the managed API key was not applied:
+
+```text
+Seeded ~/.reflexio/.env with CLAUDE_SMART_USE_LOCAL_CLI, CLAUDE_SMART_USE_LOCAL_EMBEDDING.
 ```
 
 The default managed URL is:
@@ -58,7 +96,16 @@ https://www.reflexio.ai/
 To override it:
 
 ```bash
-npx claude-smart install \
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart install \
+  --api-key "$REFLEXIO_API_KEY" \
+  --reflexio-url "https://www.reflexio.ai/"
+```
+
+Or, with uv:
+
+```bash
+uvx claude-smart install \
   --api-key "$REFLEXIO_API_KEY" \
   --reflexio-url "https://www.reflexio.ai/"
 ```
@@ -178,6 +225,7 @@ If managed learning does not appear:
 
 - Confirm `REFLEXIO_API_KEY` is present in `~/.reflexio/.env`.
 - Confirm `REFLEXIO_URL` points at `https://www.reflexio.ai/`.
+- Confirm install printed `Configured ~/.reflexio/.env for managed Reflexio`.
 - Run the `curl` command above and check for HTTP 200.
 - Restart Claude Code or Codex after changing `.env`.
 - Check `~/.claude-smart/backend.log` for hook startup messages.
@@ -185,3 +233,12 @@ If managed learning does not appear:
 If the local backend starts unexpectedly, check for a localhost URL in
 `~/.reflexio/.env`. Any non-local `REFLEXIO_URL` puts claude-smart in managed
 mode; an absent or localhost URL uses local mode.
+
+If bare `npx claude-smart install --api-key ...` keeps writing local-mode flags,
+clear stale npm/global resolution and rerun the `npm exec --package` command:
+
+```bash
+npm uninstall -g claude-smart || true
+rm -rf ~/.npm/_npx
+hash -r
+```
