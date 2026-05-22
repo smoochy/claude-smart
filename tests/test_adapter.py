@@ -38,7 +38,7 @@ class _FakeClient:
     def search_agent_playbooks(self, **_kw):
         return self._agent_playbook_resp
 
-    def search_user_profiles(self, **_kw):
+    def get_profiles(self, **_kw):
         return self._profile_resp
 
 
@@ -279,6 +279,28 @@ def test_fetch_profiles_reads_user_profiles_field() -> None:
     assert a.fetch_project_profiles("p1") == [{"content": "pref"}]
 
 
+def test_fetch_profiles_calls_scoped_get_profiles() -> None:
+    class ScopedClient:
+        def __init__(self):
+            self.profile_kwargs: dict[str, Any] = {}
+
+        def get_profiles(self, **kwargs):
+            self.profile_kwargs = kwargs
+            return SimpleNamespace(user_profiles=[{"user_id": "proj", "content": "p"}])
+
+    client = ScopedClient()
+    a = _adapter_with(client)
+
+    assert a.fetch_project_profiles("proj", top_k=3) == [
+        {"user_id": "proj", "content": "p"}
+    ]
+    assert client.profile_kwargs == {
+        "user_id": "proj",
+        "top_k": 3,
+        "status_filter": [None],
+    }
+
+
 def test_fetch_helpers_return_empty_on_unknown_shape() -> None:
     a = _adapter_with(
         _FakeClient(
@@ -344,7 +366,7 @@ class _RecordingClient:
         self.agent_playbook_kwargs = kwargs
         return self._agent_playbook_resp
 
-    def search_user_profiles(self, **kwargs):
+    def get_profiles(self, **kwargs):
         self.profile_kwargs = kwargs
         return self._profile_resp
 
@@ -429,12 +451,12 @@ def test_fetch_all_returns_three_lists() -> None:
     assert user_pb == [{"content": "u"}]
     assert agent_pb == [{"content": "a"}]
     assert profiles == [{"content": "p"}]
-    # User playbooks scoped to project_id; agent playbooks have no user_id
-    # filter (global); preferences use empty query for recency fallback.
+    # User playbooks and preferences scoped to project_id; agent playbooks
+    # have no user_id filter (global).
     assert client.user_playbook_kwargs["user_id"] == "proj"
     assert "user_id" not in client.agent_playbook_kwargs
     assert client.agent_playbook_kwargs["agent_version"] == "claude-code"
-    assert client.profile_kwargs["query"] == ""
+    assert client.profile_kwargs["user_id"] == "proj"
 
 
 def test_fetch_all_runs_legs_in_parallel() -> None:
@@ -449,7 +471,7 @@ def test_fetch_all_runs_legs_in_parallel() -> None:
             time.sleep(0.2)
             return SimpleNamespace(agent_playbooks=[])
 
-        def search_user_profiles(self, **_kw):
+        def get_profiles(self, **_kw):
             time.sleep(0.2)
             return SimpleNamespace(user_profiles=[])
 
@@ -468,7 +490,7 @@ def test_fetch_all_absorbs_per_leg_failure() -> None:
         def search_agent_playbooks(self, **_kw):
             return SimpleNamespace(agent_playbooks=[{"content": "a"}])
 
-        def search_user_profiles(self, **_kw):
+        def get_profiles(self, **_kw):
             return SimpleNamespace(user_profiles=[{"content": "p"}])
 
     a = _adapter_with(HalfBroken())
@@ -495,13 +517,10 @@ def test_fetch_all_prefers_no_query_list_endpoints_for_show() -> None:
                 agent_playbooks=[{"content": "a", "playbook_status": "approved"}]
             )
 
-        def get_all_profiles(self, **kwargs):
+        def get_profiles(self, **kwargs):
             self.profile_kwargs = kwargs
             return SimpleNamespace(
-                user_profiles=[
-                    {"user_id": "other", "content": "hidden"},
-                    {"user_id": "proj", "content": "p"},
-                ]
+                user_profiles=[{"user_id": "proj", "content": "p"}]
             )
 
     client = ListClient()
@@ -522,7 +541,11 @@ def test_fetch_all_prefers_no_query_list_endpoints_for_show() -> None:
         "status_filter": [None],
         "limit": 10,
     }
-    assert client.profile_kwargs["limit"] >= 100
+    assert client.profile_kwargs == {
+        "user_id": "proj",
+        "top_k": 20,
+        "status_filter": [None],
+    }
 
 
 def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:

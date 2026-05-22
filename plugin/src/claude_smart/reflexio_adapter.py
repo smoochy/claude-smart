@@ -326,17 +326,10 @@ class Adapter:
         if client is None:
             return []
         try:
-            if hasattr(client, "get_all_profiles"):
-                response = client.get_all_profiles(limit=max(top_k * 20, 100))
-                return [
-                    item
-                    for item in _extract_items(response, "user_profiles")
-                    if _field(item, "user_id") == project_id
-                ][:top_k]
-            response = client.search_user_profiles(
+            response = client.get_profiles(
                 user_id=project_id,
-                query="",
                 top_k=top_k,
+                status_filter=[None],
             )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("fetch_project_profiles", exc)
@@ -444,12 +437,6 @@ def _extract_items(response: Any, field: str) -> list[Any]:
     else:
         value = getattr(response, field, None)
     return list(value) if value else []
-
-
-def _field(item: Any, field: str) -> Any:
-    if isinstance(item, dict):
-        return item.get(field)
-    return getattr(item, field, None)
 
 
 def _supports_keyword(callable_obj: Any, keyword: str) -> bool:

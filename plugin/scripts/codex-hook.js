@@ -180,10 +180,12 @@ function loadReflexioEnv() {
   } catch {
     return;
   }
-  const allowed = new Set([
+  const managedReflexioKeys = new Set([
     "REFLEXIO_URL",
     "REFLEXIO_API_KEY",
     "REFLEXIO_USER_ID",
+  ]);
+  const localConfigKeys = new Set([
     "CLAUDE_SMART_USE_LOCAL_CLI",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     "CLAUDE_SMART_BACKEND_AUTOSTART",
@@ -200,8 +202,11 @@ function loadReflexioEnv() {
     const eq = line.indexOf("=");
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
-    if (!allowed.has(key) || process.env[key]) continue;
-    process.env[key] = unquoteEnvValue(line.slice(eq + 1));
+    if (managedReflexioKeys.has(key)) {
+      process.env[key] = unquoteEnvValue(line.slice(eq + 1));
+    } else if (localConfigKeys.has(key) && !process.env[key]) {
+      process.env[key] = unquoteEnvValue(line.slice(eq + 1));
+    }
   }
 }
 
