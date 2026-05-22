@@ -250,9 +250,8 @@ class Adapter:
     def fetch_user_playbooks(self, *, project_id: str, top_k: int = 10) -> list[Any]:
         """Fetch CURRENT user playbooks for ``project_id``.
 
-        User playbooks are scoped by the resolved user id: local installs use
-        the project name, while managed installs use ``REFLEXIO_USER_ID``.
-        Filtering mirrors the publish path
+        User playbooks are scoped by the resolved project id. Filtering mirrors
+        the publish path
         (``publish_interaction(user_id=project_id, …)``).
 
         Args:

@@ -24,7 +24,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from typing import Any
 
-from claude_smart import hook_log, ids, runtime
+from claude_smart import env_config, hook_log, ids, runtime
 from claude_smart.internal_call import is_internal_invocation
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     host, event = _parse_args(argv)
     runtime.set_host(host)
+    env_config.load_reflexio_env()
     if not event:
         _LOGGER.warning("hook dispatcher called with no event name")
         emit_continue()

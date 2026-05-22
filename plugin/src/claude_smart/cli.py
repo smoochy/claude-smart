@@ -30,7 +30,6 @@ import shutil
 import subprocess
 import sys
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,32 +144,13 @@ def _seed_reflexio_env() -> list[str]:
 
 def _seed_managed_reflexio_env(*, api_key: str, reflexio_url: str) -> list[str]:
     """Write managed Reflexio connection settings to ``~/.reflexio/.env``."""
-    user_id = _read_reflexio_env_value(env_config.REFLEXIO_USER_ID_ENV) or str(
-        uuid.uuid4()
-    )
     return env_config.set_env_vars(
         _REFLEXIO_ENV_PATH,
         {
             env_config.REFLEXIO_URL_ENV: reflexio_url,
             env_config.REFLEXIO_API_KEY_ENV: api_key,
-            env_config.REFLEXIO_USER_ID_ENV: user_id,
         },
     )
-
-
-def _read_reflexio_env_value(key: str) -> str:
-    try:
-        text = _REFLEXIO_ENV_PATH.read_text()
-    except OSError:
-        return ""
-    for line in text.splitlines():
-        parsed = env_config.parse_env_line(line)
-        if parsed is None:
-            continue
-        parsed_key, value = parsed
-        if parsed_key == key:
-            return value
-    return ""
 
 
 def _semver_tuple(path: Path) -> tuple[int, int, int] | None:
@@ -326,6 +306,54 @@ def _prepare_codex_local_marketplace() -> Path:
         + "\n"
     )
     return marketplace_root
+
+
+def _command_is_publish_hook(command: object) -> bool:
+    if not isinstance(command, str):
+        return False
+    return bool(
+        re.search(
+            r"hook_entry\.sh\b[\s\"']+(?:codex|claude-code)[\s\"']+(?:stop|session-end)\b",
+            command,
+        )
+        or re.search(
+            r"codex-hook\.js\"?(?:\s+\"?hook\"?){1}\s+\"?(?:stop|session-end)\"?",
+            command,
+        )
+    )
+
+
+def _prune_publish_hooks_for_read_only(plugin_root: Path) -> None:
+    """Remove publish-to-reflexio hook commands from a copied/installed plugin."""
+    for hook_file in ("hooks.json", "codex-hooks.json"):
+        hook_path = plugin_root / "hooks" / hook_file
+        if not hook_path.is_file():
+            continue
+        parsed = json.loads(hook_path.read_text())
+        hooks_by_event = parsed.get("hooks")
+        if not isinstance(hooks_by_event, dict):
+            continue
+        for event in list(hooks_by_event):
+            blocks = []
+            for block in hooks_by_event.get(event) or []:
+                if not isinstance(block, dict):
+                    continue
+                kept_hooks = [
+                    hook
+                    for hook in block.get("hooks") or []
+                    if not _command_is_publish_hook(
+                        hook.get("command") if isinstance(hook, dict) else None
+                    )
+                ]
+                if kept_hooks:
+                    next_block = dict(block)
+                    next_block["hooks"] = kept_hooks
+                    blocks.append(next_block)
+            if blocks:
+                hooks_by_event[event] = blocks
+            else:
+                del hooks_by_event[event]
+        hook_path.write_text(json.dumps(parsed, indent=2) + "\n")
 
 
 def _run_codex(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -797,11 +825,19 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
 
 def _configure_reflexio_setup(args: argparse.Namespace) -> None:
     api_key = (getattr(args, "api_key", "") or "").strip()
+    read_only = getattr(args, "read_only", None)
     if api_key:
         reflexio_url = (
             getattr(args, "reflexio_url", "") or _MANAGED_REFLEXIO_URL
         ).strip()
         added = _seed_managed_reflexio_env(api_key=api_key, reflexio_url=reflexio_url)
+        if read_only:
+            added.extend(
+                env_config.set_env_vars(
+                    _REFLEXIO_ENV_PATH,
+                    {env_config.CLAUDE_SMART_READ_ONLY_ENV: "1"},
+                )
+            )
         changed = ", ".join(added) if added else "managed Reflexio settings"
         sys.stdout.write(
             f"Configured {_REFLEXIO_ENV_PATH} for managed Reflexio "
@@ -810,6 +846,13 @@ def _configure_reflexio_setup(args: argparse.Namespace) -> None:
         return
 
     added = _seed_reflexio_env()
+    if read_only:
+        added.extend(
+            env_config.set_env_vars(
+                _REFLEXIO_ENV_PATH,
+                {env_config.CLAUDE_SMART_READ_ONLY_ENV: "1"},
+            )
+        )
     if added:
         sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
 
@@ -846,6 +889,11 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
         )
         return 1
     marketplace_root = _prepare_codex_local_marketplace()
+    read_only = bool(getattr(args, "read_only", False))
+    if read_only:
+        _prune_publish_hooks_for_read_only(
+            marketplace_root / _CODEX_LOCAL_PLUGIN_PATH
+        )
 
     hooks_ok, hooks_msg = _enable_codex_plugin_hooks()
     if hooks_ok:
@@ -869,6 +917,10 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
         )
         if installed:
             sys.stdout.write(f"{install_msg}.\n")
+            if read_only:
+                sys.stdout.write(
+                    "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
+                )
             trusted, trust_msg = _trust_codex_plugin_hooks(Path.cwd())
             if not trusted:
                 # The app-server can race against the just-installed cache.
@@ -957,6 +1009,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n"
         )
         return 1
+    if bool(getattr(args, "read_only", False)):
+        _prune_publish_hooks_for_read_only(Path(message))
+        sys.stdout.write(
+            "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
+        )
     sys.stdout.write(f"Prepared claude-smart runtime at {message}.\n")
 
     sys.stdout.write(
@@ -1135,6 +1192,12 @@ def cmd_learn(args: argparse.Namespace) -> int:
         int: 0 on success or no-op (no active session, or nothing to
             publish), 1 if reflexio is unreachable.
     """
+    if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
+        sys.stdout.write(
+            "claude-smart is in read-only mode (CLAUDE_SMART_READ_ONLY=1); "
+            "skipping publish.\n"
+        )
+        return 0
     session_id = args.session or _latest_session_id()
     if not session_id:
         sys.stdout.write("No active claude-smart session buffer found.\n")
@@ -1778,6 +1841,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reflexio-url",
         default=_MANAGED_REFLEXIO_URL,
         help="Managed Reflexio URL used only when --api-key is provided",
+    )
+    inst.add_argument(
+        "--read-only",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Install without publish interactions hooks",
     )
     inst.set_defaults(func=cmd_install)
 

@@ -206,6 +206,21 @@ export default function ConfigureEnvPage() {
                 />
               </div>
 
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <Label htmlFor="read-only-mode">CLAUDE_SMART_READ_ONLY</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Keep session context available but skip publishing
+                    interactions to Reflexio.
+                  </p>
+                </div>
+                <Switch
+                  id="read-only-mode"
+                  checked={!!config.CLAUDE_SMART_READ_ONLY}
+                  onCheckedChange={(v) => update("CLAUDE_SMART_READ_ONLY", v)}
+                />
+              </div>
+
               <div className="space-y-2">
                 <Label>CLAUDE_SMART_CLI_PATH</Label>
                 <Input

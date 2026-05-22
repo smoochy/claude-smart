@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import ids, publish, state
+from claude_smart import env_config, ids, publish, state
 from claude_smart.events.stop import (
     _read_transcript_entries,
     _scan_transcript_for_assistant_text,
@@ -58,6 +58,9 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         project_id=project_id,
         transcript_path=payload.get("transcript_path"),
     )
+    if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
+        state.mark_all_published(session_id)
+        return ("nothing", 0)
 
     # ``force_extraction=True`` makes the reflexio server run the
     # extractor synchronously for this publish, so by the time the HTTP

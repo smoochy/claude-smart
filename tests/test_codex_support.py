@@ -55,7 +55,7 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
 
     assert "function loadReflexioEnv()" in script
     assert '"REFLEXIO_API_KEY"' in script
-    assert '"REFLEXIO_USER_ID"' in script
+    assert '"CLAUDE_SMART_READ_ONLY"' in script
     assert "function reflexioUrlIsRemote()" in script
     assert "remote REFLEXIO_URL configured; skipping local backend start" in script
     assert "loadReflexioEnv();" in script

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import cs_cite, ids, internal_call, publish, runtime, state
+from claude_smart import cs_cite, env_config, ids, internal_call, publish, runtime, state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -413,6 +413,9 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     if cited_items:
         record["cited_items"] = cited_items
     state.append(session_id, record)
+    if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
+        state.mark_all_published(session_id)
+        return ("nothing", 0)
     return publish.publish_unpublished(
         session_id=session_id,
         project_id=project_id,

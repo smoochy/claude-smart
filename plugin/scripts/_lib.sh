@@ -63,15 +63,15 @@ claude_smart_source_reflexio_env() {
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     case "$key" in
-      # Reflexio identity: file always wins so a rotated key/url overrides
+      # Managed Reflexio config: file always wins so a rotated key/url overrides
       # whatever a long-lived managed backend or dashboard process inherited.
-      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID)
+      REFLEXIO_URL|REFLEXIO_API_KEY)
         value="$(claude_smart_env_unquote "$value")"
         export "$key=$value"
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
+      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_READ_ONLY|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"

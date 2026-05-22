@@ -735,6 +735,35 @@ def test_stop_appends_empty_assistant_record_when_turn_was_tools_only(
     assert any(r.get("role") == "Assistant" and r.get("content") == "" for r in records)
 
 
+def test_stop_read_only_marks_buffer_without_publishing(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "read only reply"}]},
+            },
+        ],
+    )
+    monkeypatch.setenv("CLAUDE_SMART_READ_ONLY", "1")
+
+    def fail_publish(**_kwargs):
+        raise AssertionError("read-only Stop must not publish")
+
+    monkeypatch.setattr("claude_smart.publish.publish_unpublished", fail_publish)
+
+    result = stop.handle({"session_id": "s_read_only", "transcript_path": str(transcript)})
+
+    assert result == ("nothing", 0)
+    records = state.read_all("s_read_only")
+    assert records[-1]["published_up_to"] == len(records) - 1
+    _, unpublished = state.unpublished_slice(records)
+    assert unpublished == []
+
+
 def test_stop_retries_read_when_transcript_not_yet_flushed(
     session_dir, tmp_path, monkeypatch
 ) -> None:
@@ -1775,6 +1804,28 @@ def test_session_end_uses_force_extraction_for_final_flush(
     assert published_kwargs.get("override_learning_stall") is None
     # And skip_aggregation stays False — the rollup still happens.
     assert published_kwargs["skip_aggregation"] is False
+
+
+def test_session_end_read_only_marks_buffer_without_publishing(
+    session_dir, monkeypatch
+) -> None:
+    from claude_smart.events import session_end
+
+    state.append("s_read_only_end", {"role": "User", "content": "ping", "user_id": "p"})
+    monkeypatch.setenv("CLAUDE_SMART_READ_ONLY", "true")
+
+    def fail_publish(**_kwargs):
+        raise AssertionError("read-only SessionEnd must not publish")
+
+    monkeypatch.setattr("claude_smart.publish.publish_unpublished", fail_publish)
+
+    result = session_end.handle({"session_id": "s_read_only_end", "cwd": "/tmp/p"})
+
+    assert result == ("nothing", 0)
+    records = state.read_all("s_read_only_end")
+    assert records[-1]["published_up_to"] == len(records) - 1
+    _, unpublished = state.unpublished_slice(records)
+    assert unpublished == []
 
 
 def test_session_end_uses_placeholder_when_transcript_missing(

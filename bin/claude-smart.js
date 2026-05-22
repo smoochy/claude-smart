@@ -39,8 +39,8 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
-const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
+const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -258,25 +258,6 @@ function setReflexioEnvVars(values) {
   return added;
 }
 
-function readReflexioEnvValue(key) {
-  const existing = existsSync(REFLEXIO_ENV_PATH)
-    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
-    : "";
-  for (const line of existing.split(/\r?\n/)) {
-    const parsed = parseEnvLine(line);
-    if (!parsed || parsed.key !== key) continue;
-    let value = line.slice(line.indexOf("=") + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    return value;
-  }
-  return "";
-}
-
 function maskSecret(value) {
   if (!value) return "";
   if (value.length <= 8) return "*".repeat(value.length);
@@ -286,26 +267,33 @@ function maskSecret(value) {
 
 function configureReflexioSetup(args) {
   const apiKey = parseOptionalArg(args, "--api-key").trim();
+  const readOnly = parseReadOnly(args);
   if (apiKey) {
     const reflexioUrl = parseOptionalArg(args, "--reflexio-url") || MANAGED_REFLEXIO_URL;
-    const userId = readReflexioEnvValue(REFLEXIO_USER_ID_ENV) || crypto.randomUUID();
-    const added = setReflexioEnvVars({
+    const values = {
       REFLEXIO_URL: reflexioUrl,
       REFLEXIO_API_KEY: apiKey,
-      [REFLEXIO_USER_ID_ENV]: userId,
-    });
+    };
+    if (readOnly) values[CLAUDE_SMART_READ_ONLY_ENV] = "1";
+    const added = setReflexioEnvVars(values);
     const changed = added.length > 0 ? added.join(", ") : "managed Reflexio settings";
     process.stdout.write(
       `Configured ${REFLEXIO_ENV_PATH} for managed Reflexio (${changed}; API key ${maskSecret(apiKey)}).\n`,
     );
     process.env.REFLEXIO_URL = reflexioUrl;
     process.env.REFLEXIO_API_KEY = apiKey;
-    process.env[REFLEXIO_USER_ID_ENV] = userId;
     process.env[MANAGED_SETUP_ENV] = "1";
     return;
   }
 
   const added = seedReflexioEnv();
+  if (readOnly) {
+    added.push(
+      ...setReflexioEnvVars({
+        [CLAUDE_SMART_READ_ONLY_ENV]: "1",
+      }),
+    );
+  }
   if (added.length > 0) {
     process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
   }
@@ -752,6 +740,38 @@ function quoteCommandPart(part) {
   return `"${String(part).replace(/"/g, '\\"')}"`;
 }
 
+function commandIsPublishHook(command) {
+  if (typeof command !== "string") return false;
+  return (
+    /hook_entry\.sh\b[\s"']+(?:codex|claude-code)[\s"']+(?:stop|session-end)\b/.test(command) ||
+    /codex-hook\.js"?(?:\s+"?hook"?){1}\s+"?(?:stop|session-end)"?/.test(command)
+  );
+}
+
+function prunePublishHooksForReadOnly(pluginRoot) {
+  for (const hookFile of ["hooks.json", "codex-hooks.json"]) {
+    const hookPath = join(pluginRoot, "hooks", hookFile);
+    if (!existsSync(hookPath)) continue;
+    const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
+    const hooksByEvent = parsed.hooks || {};
+    for (const event of Object.keys(hooksByEvent)) {
+      const blocks = [];
+      for (const block of hooksByEvent[event] || []) {
+        const keptHooks = (block.hooks || []).filter(
+          (hook) => !commandIsPublishHook(hook && hook.command),
+        );
+        if (keptHooks.length > 0) blocks.push({ ...block, hooks: keptHooks });
+      }
+      if (blocks.length > 0) {
+        hooksByEvent[event] = blocks;
+      } else {
+        delete hooksByEvent[event];
+      }
+    }
+    writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
+  }
+}
+
 function patchCodexHooksForNode(pluginRoot, nodePath) {
   const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
   const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
@@ -796,11 +816,12 @@ function ensurePluginRoot(pluginRoot) {
   }
 }
 
-async function bootstrapPluginRuntime(pluginRoot) {
+async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
   const nodeRuntime = await ensurePrivateNode();
   patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
+  if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   ensurePluginRoot(pluginRoot);
   const uv = await ensureUv();
   const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
@@ -850,6 +871,7 @@ function printHelp() {
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
       "  npx claude-smart install --source <owner/repo> Override the marketplace source",
       "  npx claude-smart install --api-key <key>        Use managed Reflexio service",
+      "  npx claude-smart install --read-only            Install without publish interactions hooks",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart --help                        Show this help",
       "",
@@ -858,7 +880,7 @@ function printHelp() {
       `  2. claude plugin install ${PLUGIN_SPEC}`,
       "  3. Appends CLAUDE_SMART_USE_LOCAL_CLI=1 and CLAUDE_SMART_USE_LOCAL_EMBEDDING=1",
       "     to ~/.reflexio/.env (idempotent).",
-      "     Passing --api-key writes REFLEXIO_URL, REFLEXIO_API_KEY, and REFLEXIO_USER_ID instead.",
+      "     Passing --api-key writes REFLEXIO_URL and REFLEXIO_API_KEY instead.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
@@ -915,6 +937,10 @@ function parseHost(args) {
     process.exit(1);
   }
   return value;
+}
+
+function parseReadOnly(args) {
+  return args.includes("--read-only");
 }
 
 function copyCodexMarketplace() {
@@ -1368,6 +1394,7 @@ async function runInstall(args) {
   }
 
   const source = parseSource(args);
+  const readOnly = parseReadOnly(args);
   configureReflexioSetup(args);
 
   const steps = [
@@ -1387,6 +1414,10 @@ async function runInstall(args) {
 
   try {
     const pluginRoot = await bootstrapClaudeCodeInstall();
+    if (readOnly) {
+      prunePublishHooksForReadOnly(pluginRoot);
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     if (refreshDashboardService(pluginRoot)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
@@ -1417,9 +1448,13 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
+  const readOnly = parseReadOnly(args);
   configureReflexioSetup(args);
 
   const marketplaceRoot = copyCodexMarketplace();
+  if (readOnly) {
+    prunePublishHooksForReadOnly(codexMarketplacePluginRoot(marketplaceRoot));
+  }
   process.stdout.write(`Prepared Codex marketplace at ${marketplaceRoot}.\n`);
 
   let code = await runCodex(["plugin", "marketplace", "add", marketplaceRoot]);
@@ -1460,7 +1495,10 @@ async function runInstallCodex(args) {
   try {
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
-    await bootstrapPluginRuntime(cacheDir);
+    await bootstrapPluginRuntime(cacheDir, { readOnly });
+    if (readOnly) {
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
     if (refreshDashboardService(cacheDir)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
     }
@@ -1581,4 +1619,5 @@ module.exports = {
   configureReflexioSetup,
   patchCodexHooksForNode,
   platformSupportError,
+  prunePublishHooksForReadOnly,
 };

@@ -9,7 +9,7 @@ REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
-REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID"
+CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 
 
 def parse_env_line(line: str) -> tuple[str, str] | None:
@@ -87,6 +87,11 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
     path.write_text(content + ("\n" if content else ""), encoding="utf-8")
     path.chmod(0o600)
     return added
+
+
+def env_truthy(name: str) -> bool:
+    """Return True when an environment flag is explicitly enabled."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def mask_secret(value: str) -> str:

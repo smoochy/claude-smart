@@ -15,7 +15,9 @@
 #      (user scope) so `claude-smart@reflexioai-local` is available everywhere.
 #   7. For Claude Code: wire this repo's .claude/settings.local.json to enable
 #      the local plugin and shadow the remote one for this project.
-#   8. For Codex (`--host codex` or `--host both`): run the maintained
+#   8. With `--read-only`, write CLAUDE_SMART_READ_ONLY=1 so local hooks
+#      buffer but do not publish interactions to Reflexio.
+#   9. For Codex (`--host codex` or `--host both`): run the maintained
 #      Node install wrapper so Codex hooks are patched through the JSON-safe
 #      codex-hook.js adapter.
 #
@@ -100,16 +102,20 @@ refresh_local_dashboard() {
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both]
+Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both] [--read-only]
 
 Hosts:
   claude-code  Prepare local Claude Code marketplace/settings (default)
   codex        Install and trust the local plugin for Codex
   both         Do both host setups
+
+Options:
+  --read-only  Disable publish interactions hooks via ~/.reflexio/.env
 EOF
 }
 
 HOST="claude-code"
+READ_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --host)
@@ -123,6 +129,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --host=*)
       HOST="${1#--host=}"
+      shift
+      ;;
+    --read-only)
+      READ_ONLY=1
       shift
       ;;
     -h|--help)
@@ -200,6 +210,33 @@ fi
 if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
   printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
   log "appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV"
+fi
+python3 - "$REFLEXIO_ENV" "$READ_ONLY" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+value = "1" if sys.argv[2] == "1" else "0"
+key = "CLAUDE_SMART_READ_ONLY"
+lines = path.read_text().splitlines() if path.exists() else []
+out = []
+seen = False
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
+        out.append(f'{key}="{value}"')
+        seen = True
+    else:
+        out.append(line)
+if not seen:
+    out.append(f'{key}="{value}"')
+path.write_text("\n".join(out) + "\n")
+path.chmod(0o600)
+PY
+if [ "$READ_ONLY" = "1" ]; then
+  log "set CLAUDE_SMART_READ_ONLY=1 in $REFLEXIO_ENV"
+else
+  log "set CLAUDE_SMART_READ_ONLY=0 in $REFLEXIO_ENV"
 fi
 
 if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
@@ -326,7 +363,11 @@ if [ "$SETUP_CODEX" = "1" ]; then
   fi
   log "installing local claude-smart plugin for Codex..."
   rm -f "$HOME/plugins/claude-smart"
-  (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
+  if [ "$READ_ONLY" = "1" ]; then
+    (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex --read-only)
+  else
+    (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
+  fi
 fi
 
 refresh_local_dashboard

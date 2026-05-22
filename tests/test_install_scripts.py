@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -270,12 +269,13 @@ def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
 
 def test_smart_install_keeps_local_flags_local_mode_only() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
+    lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
     assert 'if [ -z "${REFLEXIO_API_KEY:-}" ]; then' in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
     assert "claude_smart_source_reflexio_env" in script
-    assert "REFLEXIO_USER_ID" in (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
+    assert "CLAUDE_SMART_READ_ONLY" in lib
 
 
 def test_reflexio_env_file_overrides_stale_managed_process_env(
@@ -286,18 +286,16 @@ def test_reflexio_env_file_overrides_stale_managed_process_env(
     env_path.write_text(
         'REFLEXIO_URL="https://www.reflexio.ai/"\n'
         'REFLEXIO_API_KEY="rflx-file-secret"\n'
-        'REFLEXIO_USER_ID="file-user"\n'
     )
 
     script = (
         f'. "{LIB}"; '
         "claude_smart_source_reflexio_env; "
-        'printf "%s\\n%s\\n%s\\n" "$REFLEXIO_URL" "$REFLEXIO_API_KEY" "$REFLEXIO_USER_ID"'
+        'printf "%s\\n%s\\n" "$REFLEXIO_URL" "$REFLEXIO_API_KEY"'
     )
     env = _isolated_env(tmp_path)
     env["REFLEXIO_URL"] = "https://stale.example/"
     env["REFLEXIO_API_KEY"] = "rflx-stale-secret"
-    env["REFLEXIO_USER_ID"] = "stale-user"
 
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-c", script],
@@ -311,8 +309,29 @@ def test_reflexio_env_file_overrides_stale_managed_process_env(
     assert result.stdout.splitlines() == [
         "https://www.reflexio.ai/",
         "rflx-file-secret",
-        "file-user",
     ]
+
+
+def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('CLAUDE_SMART_READ_ONLY="1"\n')
+
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_source_reflexio_env; "
+        'printf "%s\\n" "${CLAUDE_SMART_READ_ONLY:-}"'
+    )
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1"
 
 
 def test_node_installer_supports_managed_reflexio_setup() -> None:
@@ -322,7 +341,6 @@ def test_node_installer_supports_managed_reflexio_setup() -> None:
     assert 'parseOptionalArg(args, "--api-key")' in installer
     assert 'parseOptionalArg(args, "--reflexio-url")' in installer
     assert "REFLEXIO_API_KEY" in installer
-    assert "REFLEXIO_USER_ID" in installer
     assert "CLAUDE_SMART_MANAGED_SETUP" in installer
     assert "configureReflexioSetup(args)" in installer
     assert "maskSecret(apiKey)" in installer
@@ -392,10 +410,7 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
     env_text = (tmp_path / ".reflexio" / ".env").read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
-    assert re.search(
-        r'REFLEXIO_USER_ID="[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"',
-        env_text,
-    )
+    assert "REFLEXIO_USER_ID=" not in env_text
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == new_root
 
 
@@ -470,7 +485,7 @@ def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
     env_text = (tmp_path / ".reflexio" / ".env").read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
-    assert "REFLEXIO_USER_ID=" in env_text
+    assert "REFLEXIO_USER_ID=" not in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI" not in env_text
 
 
@@ -506,7 +521,7 @@ def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
     env_text = (tmp_path / ".reflexio" / ".env").read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
-    assert "REFLEXIO_USER_ID=" in env_text
+    assert "REFLEXIO_USER_ID=" not in env_text
 
 
 def test_dashboard_service_loads_reflexio_env_for_managed_proxy() -> None:
@@ -584,6 +599,9 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "claude plugin update -s user claude-smart@reflexioai-local" in script
     assert "claude plugin install -s user claude-smart@reflexioai-local" in script
     assert "installing/updating claude-smart@reflexioai-local" in script
+    assert "--read-only" in script
+    assert "CLAUDE_SMART_READ_ONLY" in script
+    assert "node bin/claude-smart.js install --host codex --read-only" in script
 
 
 def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
@@ -1083,6 +1101,102 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     assert '"hook"' in user_prompt_cmd and '"user-prompt"' in user_prompt_cmd
 
 
+def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    plugin_root = tmp_path / "plugin"
+    hooks = plugin_root / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-start'
+                                }
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code stop'
+                                }
+                            ]
+                        }
+                    ],
+                    "SessionEnd": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-end'
+                                },
+                                {
+                                    "command": 'bash "$_R/scripts/backend-service.sh" session-end'
+                                },
+                            ]
+                        }
+                    ],
+                }
+            }
+        )
+        + "\n"
+    )
+    (hooks / "codex-hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "session-start"'
+                                }
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "stop"'
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        )
+        + "\n"
+    )
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.prunePublishHooksForReadOnly({json.dumps(str(plugin_root))});"
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    claude_hooks = json.loads((hooks / "hooks.json").read_text())["hooks"]
+    codex_hooks = json.loads((hooks / "codex-hooks.json").read_text())["hooks"]
+    assert "Stop" not in claude_hooks
+    assert "Stop" not in codex_hooks
+    assert "SessionStart" in claude_hooks
+    assert "SessionStart" in codex_hooks
+    assert "backend-service.sh" in json.dumps(claude_hooks)
+
+
 def test_resolve_npm_accepts_windows_cmd_shim(tmp_path: Path) -> None:
     npm_cmd = tmp_path / "npm.cmd"
     npm_cmd.write_text("#!/bin/sh\nprintf '10.0.0\\n'\n")
@@ -1316,8 +1430,8 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
     reflexio_env.write_text(
         'REFLEXIO_URL="https://www.reflexio.ai/"\n'
         'REFLEXIO_API_KEY="rflx-file-secret"\n'
-        'REFLEXIO_USER_ID="file-user"\n'
         "CLAUDE_SMART_USE_LOCAL_CLI=file-local\n"
+        'CLAUDE_SMART_READ_ONLY="1"\n'
     )
 
     bin_dir = tmp_path / "bin"
@@ -1327,8 +1441,8 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
         "#!/bin/sh\n"
         'printf \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
         '\\"additionalContext\\":\\"%s|%s|%s|%s\\"}}\\n\' '
-        '"$REFLEXIO_URL" "$REFLEXIO_API_KEY" "$REFLEXIO_USER_ID" '
-        '"$CLAUDE_SMART_USE_LOCAL_CLI"\n'
+        '"$REFLEXIO_URL" "$REFLEXIO_API_KEY" '
+        '"$CLAUDE_SMART_USE_LOCAL_CLI" "$CLAUDE_SMART_READ_ONLY"\n'
     )
     uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
 
@@ -1337,7 +1451,6 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
     env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
     env["REFLEXIO_URL"] = "https://stale.example/"
     env["REFLEXIO_API_KEY"] = "rflx-stale-secret"
-    env["REFLEXIO_USER_ID"] = "stale-user"
     env["CLAUDE_SMART_USE_LOCAL_CLI"] = "env-local"
 
     result = subprocess.run(
@@ -1352,7 +1465,7 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
     assert parsed["hookSpecificOutput"]["additionalContext"] == (
-        "https://www.reflexio.ai/|rflx-file-secret|file-user|env-local"
+        "https://www.reflexio.ai/|rflx-file-secret|env-local|1"
     )
     assert parsed["continue"] is True
 

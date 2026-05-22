@@ -183,11 +183,11 @@ function loadReflexioEnv() {
   const managedReflexioKeys = new Set([
     "REFLEXIO_URL",
     "REFLEXIO_API_KEY",
-    "REFLEXIO_USER_ID",
   ]);
   const localConfigKeys = new Set([
     "CLAUDE_SMART_USE_LOCAL_CLI",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+    "CLAUDE_SMART_READ_ONLY",
     "CLAUDE_SMART_BACKEND_AUTOSTART",
     "CLAUDE_SMART_DASHBOARD_AUTOSTART",
     "CLAUDE_SMART_CLI_PATH",

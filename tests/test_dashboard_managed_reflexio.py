@@ -16,15 +16,27 @@ def test_dashboard_config_knows_reflexio_api_key() -> None:
     ).read_text()
 
     assert '"REFLEXIO_API_KEY"' in config
-    assert '"REFLEXIO_USER_ID"' in config
     assert "REFLEXIO_API_KEY: string;" in types
-    assert "REFLEXIO_USER_ID: string;" in types
     assert "REFLEXIO_API_KEY_SET?: boolean;" in types
     assert "<Label>REFLEXIO_API_KEY</Label>" in page
     assert 'type="password"' in page
     assert "apiKeyDirty" in page
     assert "delete envUpdate.REFLEXIO_API_KEY" in page
     assert "leave blank to keep existing key" in page
+
+
+def test_dashboard_config_can_toggle_read_only_mode() -> None:
+    config = (REPO_ROOT / "plugin" / "dashboard" / "lib" / "config-file.ts").read_text()
+    types = (REPO_ROOT / "plugin" / "dashboard" / "lib" / "types.ts").read_text()
+    page = (
+        REPO_ROOT / "plugin" / "dashboard" / "app" / "configure" / "env" / "page.tsx"
+    ).read_text()
+
+    assert '"CLAUDE_SMART_READ_ONLY"' in config
+    assert "CLAUDE_SMART_READ_ONLY: boolean;" in types
+    assert '<Label htmlFor="read-only-mode">CLAUDE_SMART_READ_ONLY</Label>' in page
+    assert 'checked={!!config.CLAUDE_SMART_READ_ONLY}' in page
+    assert 'update("CLAUDE_SMART_READ_ONLY", v)' in page
 
 
 def test_dashboard_config_endpoint_masks_reflexio_api_key() -> None:

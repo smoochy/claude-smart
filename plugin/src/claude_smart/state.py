@@ -150,6 +150,15 @@ def append(session_id: str, record: dict[str, Any]) -> None:
         fh.write(line)
 
 
+def mark_all_published(session_id: str) -> None:
+    """Advance the watermark over every currently buffered record.
+
+    Read-only mode still needs to retire any already-buffered interactions so
+    they cannot publish later if learning is re-enabled.
+    """
+    append(session_id, {"published_up_to": len(read_all(session_id))})
+
+
 def read_all(session_id: str) -> list[dict[str, Any]]:
     """Return every record in the buffer as a list of dicts. Missing file → []."""
     path = session_path(session_id)

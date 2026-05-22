@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import re
 import stat
 from pathlib import Path
 
@@ -171,10 +171,7 @@ def test_install_setup_api_key_configures_managed_reflexio(
     assert "UNKNOWN=value" in text
     assert 'REFLEXIO_URL="https://managed.example/"' in text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
-    assert re.search(
-        r'REFLEXIO_USER_ID="[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"',
-        text,
-    )
+    assert "REFLEXIO_USER_ID=" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI" not in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert env_path.stat().st_mode & 0o777 == 0o600
@@ -183,7 +180,7 @@ def test_install_setup_api_key_configures_managed_reflexio(
     assert "rflx-test-secret" not in out
 
 
-def test_install_setup_api_key_preserves_existing_managed_user_id(
+def test_install_setup_api_key_preserves_existing_unrelated_user_id(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -208,6 +205,107 @@ def test_install_parser_defaults_managed_url_only_when_api_key_is_present() -> N
 
     assert args.api_key == "rflx-key"
     assert args.reflexio_url == "https://www.reflexio.ai/"
+
+
+def test_install_parser_accepts_read_only() -> None:
+    args = cli._build_parser().parse_args(["install", "--read-only"])
+
+    assert args.read_only is True
+
+
+def test_read_only_prunes_publish_hooks_but_keeps_runtime_hooks(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    hooks_dir = plugin_root / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-start'
+                                }
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code stop'
+                                }
+                            ]
+                        }
+                    ],
+                    "SessionEnd": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-end'
+                                },
+                                {
+                                    "command": 'bash "$_R/scripts/dashboard-service.sh" session-end'
+                                },
+                            ]
+                        }
+                    ],
+                }
+            }
+        )
+        + "\n"
+    )
+    (hooks_dir / "codex-hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'
+                                }
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "stop"'
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        )
+        + "\n"
+    )
+
+    cli._prune_publish_hooks_for_read_only(plugin_root)
+
+    claude_hooks = json.loads((hooks_dir / "hooks.json").read_text())["hooks"]
+    codex_hooks = json.loads((hooks_dir / "codex-hooks.json").read_text())["hooks"]
+    assert "Stop" not in claude_hooks
+    assert "Stop" not in codex_hooks
+    claude_commands = [
+        hook["command"]
+        for blocks in claude_hooks.values()
+        for block in blocks
+        for hook in block["hooks"]
+    ]
+    codex_commands = [
+        hook["command"]
+        for blocks in codex_hooks.values()
+        for block in blocks
+        for hook in block["hooks"]
+    ]
+    assert any("claude-code session-start" in command for command in claude_commands)
+    assert any("dashboard-service.sh" in command for command in claude_commands)
+    assert any("session-end" in command for command in claude_commands)
+    assert any("codex session-start" in command for command in codex_commands)
 
 
 def test_update_parser_accepts_api_key_for_managed_config() -> None:
@@ -239,4 +337,4 @@ def test_cmd_update_api_key_configures_managed_reflexio(
     text = env_path.read_text()
     assert 'REFLEXIO_URL="https://managed.example/"' in text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
-    assert "REFLEXIO_USER_ID=" in text
+    assert "REFLEXIO_USER_ID=" not in text

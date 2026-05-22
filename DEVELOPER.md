@@ -302,6 +302,7 @@ Use the one-shot setup when developing the plugin, dashboard, or local `reflexio
 bash scripts/setup-local-dev.sh                         # Claude Code local setup
 bash scripts/setup-local-dev.sh --host codex            # Codex local setup
 bash scripts/setup-local-dev.sh --host both             # Claude Code + Codex
+bash scripts/setup-local-dev.sh --read-only             # Local setup without publishing interactions
 ```
 
 Idempotent. This single script handles the shared local-dev prep for every host — see its header comment for the full list, but in summary it:

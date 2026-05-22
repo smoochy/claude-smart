@@ -472,25 +472,10 @@ claude_smart_env_upsert() {
   fi
 }
 
-claude_smart_generate_uuid() {
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    cat /proc/sys/kernel/random/uuid
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import uuid; print(uuid.uuid4())'
-  elif command -v python >/dev/null 2>&1; then
-    python -c 'import uuid; print(uuid.uuid4())'
-  else
-    date +%s%N | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12}).*/\1-\2-\3-\4-\5/'
-  fi
-}
-
 if [ "${CLAUDE_SMART_MANAGED_SETUP:-}" = "1" ] && [ -n "${REFLEXIO_API_KEY:-}" ]; then
   REFLEXIO_URL="${REFLEXIO_URL:-https://www.reflexio.ai/}"
-  REFLEXIO_USER_ID="${REFLEXIO_USER_ID:-$(claude_smart_env_value REFLEXIO_USER_ID || true)}"
-  REFLEXIO_USER_ID="${REFLEXIO_USER_ID:-$(claude_smart_generate_uuid)}"
   claude_smart_env_upsert REFLEXIO_URL "$REFLEXIO_URL"
   claude_smart_env_upsert REFLEXIO_API_KEY "$REFLEXIO_API_KEY"
-  claude_smart_env_upsert REFLEXIO_USER_ID "$REFLEXIO_USER_ID"
   chmod 600 "$REFLEXIO_ENV"
   echo "[claude-smart] configured managed Reflexio in $REFLEXIO_ENV" >&2
 elif [ -z "${REFLEXIO_API_KEY:-}" ]; then

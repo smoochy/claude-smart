@@ -113,6 +113,48 @@ uvx claude-smart install \
 After install, restart Claude Code or Codex so hooks reload with the new
 configuration.
 
+## Install with API Key in Read-Only Mode
+
+Read-only mode installs claude-smart without the publish-interactions hooks, so
+the local session does not send interaction data to Reflexio. Learned profiles
+and playbooks already stored in the managed account are still fetched and
+applied; only the publishing side is disabled.
+
+Install for Claude Code with managed Reflexio in read-only mode:
+
+```bash
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart install --api-key "$REFLEXIO_API_KEY" --read-only
+```
+
+Or, if you use uv:
+
+```bash
+uvx claude-smart install --api-key "$REFLEXIO_API_KEY" --read-only
+```
+
+Install for Codex with managed Reflexio in read-only mode:
+
+```bash
+npm exec --yes --package claude-smart@latest -- \
+  claude-smart install --host codex --api-key "$REFLEXIO_API_KEY" --read-only
+```
+
+Or, if you use uv:
+
+```bash
+uvx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY" --read-only
+```
+
+A successful read-only install prints:
+
+```text
+Configured ~/.reflexio/.env for managed Reflexio
+Installed read-only hook manifest; publish interactions hooks are disabled.
+```
+
+Restart Claude Code or Codex after install so hooks reload.
+
 ## What Setup Writes
 
 Managed setup writes these values to `~/.reflexio/.env`:
@@ -120,12 +162,11 @@ Managed setup writes these values to `~/.reflexio/.env`:
 ```env
 REFLEXIO_URL="https://www.reflexio.ai/"
 REFLEXIO_API_KEY="rflx-your-api-key"
-REFLEXIO_USER_ID="7f1a5bb4-6a63-42ec-a74c-1f2a89e16e3a"
 ```
 
 The file is written with mode `0600`. Unknown keys, comments, and unrelated
-settings are preserved. `REFLEXIO_USER_ID` is generated once and reused so
-managed publishes are scoped to the user instead of the current project name.
+settings are preserved. Managed publishes use the same project id scoping as
+local mode.
 
 Local setup still writes only the local-mode flags:
 
@@ -134,8 +175,8 @@ CLAUDE_SMART_USE_LOCAL_CLI=1
 CLAUDE_SMART_USE_LOCAL_EMBEDDING=1
 ```
 
-`REFLEXIO_URL`, `REFLEXIO_API_KEY`, and `REFLEXIO_USER_ID` are written only
-when `--api-key` is provided.
+`REFLEXIO_URL` and `REFLEXIO_API_KEY` are written only when `--api-key` is
+provided.
 
 ## Verify Managed Access
 
@@ -181,7 +222,7 @@ Open the dashboard the same way as local mode:
 - Codex: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
 
 The dashboard Environment page can view or update `REFLEXIO_URL` and
-`REFLEXIO_API_KEY`. `REFLEXIO_USER_ID` is preserved in the env file.
+`REFLEXIO_API_KEY`.
 
 ## Citation Links
 
@@ -201,7 +242,6 @@ Edit `~/.reflexio/.env` and remove:
 ```env
 REFLEXIO_URL=...
 REFLEXIO_API_KEY=...
-REFLEXIO_USER_ID=...
 ```
 
 Then make sure the local flags are present:
