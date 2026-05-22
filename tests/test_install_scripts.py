@@ -323,8 +323,12 @@ def test_node_installer_supports_managed_reflexio_setup() -> None:
     assert 'parseOptionalArg(args, "--reflexio-url")' in installer
     assert "REFLEXIO_API_KEY" in installer
     assert "REFLEXIO_USER_ID" in installer
+    assert "CLAUDE_SMART_MANAGED_SETUP" in installer
     assert "configureReflexioSetup(args)" in installer
     assert "maskSecret(apiKey)" in installer
+    script = SMART_INSTALL.read_text()
+    assert 'CLAUDE_SMART_MANAGED_SETUP:-}" = "1"' in script
+    assert "configured managed Reflexio" in script
 
 
 def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
@@ -348,7 +352,12 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
         scripts.mkdir(parents=True)
         (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
         install = scripts / "smart-install.sh"
-        install.write_text("#!/bin/sh\nprintf 'bootstrapped %s\\n' \"$PWD\"\n")
+        install.write_text(
+            "#!/bin/sh\n"
+            '[ "$CLAUDE_SMART_MANAGED_SETUP" = "1" ] || exit 41\n'
+            '[ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
+            'printf \'bootstrapped %s\\n\' "$PWD"\n'
+        )
         install.chmod(install.stat().st_mode | stat.S_IXUSR)
 
     old_root = cache_root / "0.2.31"
@@ -411,7 +420,11 @@ def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
     scripts.mkdir(parents=True)
     (cache_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     install = scripts / "smart-install.sh"
-    install.write_text("#!/bin/sh\nexit 0\n")
+    install.write_text(
+        "#!/bin/sh\n"
+        '[ "$CLAUDE_SMART_MANAGED_SETUP" = "1" ] || exit 41\n'
+        '[ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
+    )
     install.chmod(install.stat().st_mode | stat.S_IXUSR)
 
     fake_bin = tmp_path / "fake-bin"

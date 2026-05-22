@@ -40,6 +40,7 @@ const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
+const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -297,6 +298,10 @@ function configureReflexioSetup(args) {
     process.stdout.write(
       `Configured ${REFLEXIO_ENV_PATH} for managed Reflexio (${changed}; API key ${maskSecret(apiKey)}).\n`,
     );
+    process.env.REFLEXIO_URL = reflexioUrl;
+    process.env.REFLEXIO_API_KEY = apiKey;
+    process.env[REFLEXIO_USER_ID_ENV] = userId;
+    process.env[MANAGED_SETUP_ENV] = "1";
     return;
   }
 
