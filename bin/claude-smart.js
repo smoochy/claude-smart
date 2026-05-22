@@ -5,7 +5,9 @@
  * plugin. For Codex it copies the bundled local marketplace, registers it,
  * and enables plugin hooks. Both paths seed ~/.reflexio/.env with the two
  * local-provider flags so reflexio can route generation through local tools
- * with no API key.
+ * with no API key. Managed/read-only/global setup is handled by
+ * `npx claude-smart setup`, which writes ~/.reflexio/.env before running this
+ * installer.
  *
  * Keep this file dependency-free — it runs via `npx` with no install step.
  */
@@ -14,8 +16,6 @@
 const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
-  appendFileSync,
-  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -41,6 +41,7 @@ const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
+const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -196,28 +197,6 @@ function runCodex(args) {
   });
 }
 
-function seedReflexioEnv() {
-  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
-  const existing = existsSync(REFLEXIO_ENV_PATH)
-    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
-    : "";
-  const flags = [
-    "CLAUDE_SMART_USE_LOCAL_CLI",
-    "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
-  ];
-  const missing = flags.filter((f) => !new RegExp(`^${f}=`, "m").test(existing));
-  if (missing.length === 0) return [];
-  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
-  const body = missing.map((f) => `${f}=1`).join("\n") + "\n";
-  appendFileSync(REFLEXIO_ENV_PATH, prefix + body);
-  chmodSync(REFLEXIO_ENV_PATH, 0o600);
-  return missing;
-}
-
-function escapeEnvValue(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 function parseEnvLine(line) {
   let trimmed = String(line || "").trim();
   if (!trimmed || trimmed.startsWith("#")) return null;
@@ -226,36 +205,15 @@ function parseEnvLine(line) {
   if (eq < 0) return null;
   const key = trimmed.slice(0, eq).trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
-  return { key };
-}
-
-function setReflexioEnvVars(values) {
-  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
-  const existing = existsSync(REFLEXIO_ENV_PATH)
-    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
-    : "";
-  const lines = existing ? existing.split(/\r?\n/) : [];
-  const seen = new Set();
-  const out = [];
-  for (const line of lines) {
-    const parsed = parseEnvLine(line);
-    if (parsed && Object.prototype.hasOwnProperty.call(values, parsed.key)) {
-      out.push(`${parsed.key}="${escapeEnvValue(values[parsed.key])}"`);
-      seen.add(parsed.key);
-    } else {
-      out.push(line);
-    }
+  let value = trimmed.slice(eq + 1).trim();
+  if (
+    value.length >= 2 &&
+    ((value[0] === '"' && value[value.length - 1] === '"') ||
+      (value[0] === "'" && value[value.length - 1] === "'"))
+  ) {
+    value = value.slice(1, -1);
   }
-  const added = [];
-  for (const [key, value] of Object.entries(values)) {
-    if (seen.has(key)) continue;
-    out.push(`${key}="${escapeEnvValue(value)}"`);
-    added.push(key);
-  }
-  const content = out.join("\n").replace(/\n*$/, "\n");
-  writeFileSync(REFLEXIO_ENV_PATH, content);
-  chmodSync(REFLEXIO_ENV_PATH, 0o600);
-  return added;
+  return { key, value };
 }
 
 function maskSecret(value) {
@@ -265,38 +223,47 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
-function configureReflexioSetup(args) {
-  const apiKey = parseOptionalArg(args, "--api-key").trim();
-  const readOnly = parseReadOnly(args);
+function loadReflexioSetupEnv() {
+  let readOnlyValue = "";
+  let fileApiKey = "";
+  let fileUrl = "";
+  if (existsSync(REFLEXIO_ENV_PATH)) {
+    const text = readFileSync(REFLEXIO_ENV_PATH, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const parsed = parseEnvLine(line);
+      if (!parsed) continue;
+      if (parsed.key === "REFLEXIO_API_KEY") {
+        fileApiKey = parsed.value;
+      } else if (parsed.key === "REFLEXIO_URL") {
+        fileUrl = parsed.value;
+      } else if (parsed.key === REFLEXIO_USER_ID_ENV) {
+        process.env[parsed.key] = parsed.value;
+      } else if (parsed.key === CLAUDE_SMART_READ_ONLY_ENV) {
+        readOnlyValue = parsed.value;
+      }
+    }
+  }
+  const apiKey = (fileApiKey || process.env.REFLEXIO_API_KEY || "").trim();
   if (apiKey) {
-    const reflexioUrl = parseOptionalArg(args, "--reflexio-url") || MANAGED_REFLEXIO_URL;
-    const values = {
-      REFLEXIO_URL: reflexioUrl,
-      REFLEXIO_API_KEY: apiKey,
-    };
-    if (readOnly) values[CLAUDE_SMART_READ_ONLY_ENV] = "1";
-    const added = setReflexioEnvVars(values);
-    const changed = added.length > 0 ? added.join(", ") : "managed Reflexio settings";
-    process.stdout.write(
-      `Configured ${REFLEXIO_ENV_PATH} for managed Reflexio (${changed}; API key ${maskSecret(apiKey)}).\n`,
-    );
-    process.env.REFLEXIO_URL = reflexioUrl;
     process.env.REFLEXIO_API_KEY = apiKey;
+    process.env.REFLEXIO_URL = (fileUrl || process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL).trim();
     process.env[MANAGED_SETUP_ENV] = "1";
-    return;
-  }
-
-  const added = seedReflexioEnv();
-  if (readOnly) {
-    added.push(
-      ...setReflexioEnvVars({
-        [CLAUDE_SMART_READ_ONLY_ENV]: "1",
-      }),
+    process.stdout.write(
+      `Using managed Reflexio at ${process.env.REFLEXIO_URL} (API key ${maskSecret(apiKey)}).\n`,
     );
+  } else {
+    delete process.env.REFLEXIO_URL;
+    delete process.env.REFLEXIO_API_KEY;
+    delete process.env[MANAGED_SETUP_ENV];
   }
-  if (added.length > 0) {
-    process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
-  }
+  const readOnly = ["1", "true", "yes", "on"].includes(
+    String(readOnlyValue).trim().toLowerCase(),
+  );
+  return { readOnly };
+}
+
+function configureReflexioSetup() {
+  return loadReflexioSetupEnv();
 }
 
 function findClaudeCodePluginRoot() {
@@ -772,6 +739,18 @@ function prunePublishHooksForReadOnly(pluginRoot) {
   }
 }
 
+function restorePublishHooksFromSource(pluginRoot) {
+  const sourceHooksDir = join(PACKAGE_ROOT, "plugin", "hooks");
+  const targetHooksDir = join(pluginRoot, "hooks");
+  for (const hookFile of ["hooks.json", "codex-hooks.json"]) {
+    const sourcePath = join(sourceHooksDir, hookFile);
+    const targetPath = join(targetHooksDir, hookFile);
+    if (!existsSync(sourcePath) || !existsSync(targetPath)) continue;
+    if (sourcePath === targetPath) continue;
+    cpSync(sourcePath, targetPath, { force: true });
+  }
+}
+
 function patchCodexHooksForNode(pluginRoot, nodePath) {
   const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
   const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
@@ -870,17 +849,14 @@ function printHelp() {
       "  npx claude-smart install                       Install the plugin into Claude Code",
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
       "  npx claude-smart install --source <owner/repo> Override the marketplace source",
-      "  npx claude-smart install --api-key <key>        Use managed Reflexio service",
-      "  npx claude-smart install --read-only            Install without publish interactions hooks",
+      "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart --help                        Show this help",
       "",
       "Claude Code install:",
       "  1. claude plugin marketplace add <source>",
       `  2. claude plugin install ${PLUGIN_SPEC}`,
-      "  3. Appends CLAUDE_SMART_USE_LOCAL_CLI=1 and CLAUDE_SMART_USE_LOCAL_EMBEDDING=1",
-      "     to ~/.reflexio/.env (idempotent).",
-      "     Passing --api-key writes REFLEXIO_URL and REFLEXIO_API_KEY instead.",
+      "  3. Reads ~/.reflexio/.env when managed/read-only setup was configured.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
@@ -893,7 +869,7 @@ function printHelp() {
       "",
       "Update:",
       "  npx claude-smart update                        Update to the latest version",
-      "  npx claude-smart update --api-key <key>        Update and configure managed Reflexio",
+      "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "",
       "Uninstall:",
       "  npx claude-smart uninstall                     Remove the plugin from Claude Code",
@@ -913,17 +889,6 @@ function parseSource(args) {
   return value;
 }
 
-function parseOptionalArg(args, flag) {
-  const idx = args.indexOf(flag);
-  if (idx === -1) return "";
-  const value = args[idx + 1];
-  if (!value) {
-    process.stderr.write(`error: ${flag} requires a value\n`);
-    process.exit(1);
-  }
-  return value;
-}
-
 function parseHost(args) {
   const idx = args.indexOf("--host");
   if (idx === -1) return "claude-code";
@@ -937,10 +902,6 @@ function parseHost(args) {
     process.exit(1);
   }
   return value;
-}
-
-function parseReadOnly(args) {
-  return args.includes("--read-only");
 }
 
 function copyCodexMarketplace() {
@@ -1324,6 +1285,7 @@ function installCodexPluginCache(pluginRoot) {
 }
 
 async function runUpdate(args) {
+  const setup = configureReflexioSetup();
   if (!hasClaudeCli()) {
     process.stderr.write(
       "error: 'claude' CLI not found on PATH. " +
@@ -1341,7 +1303,14 @@ async function runUpdate(args) {
   }
 
   process.stdout.write("\nclaude-smart updated. Restart Claude Code to apply.\n");
-  if (args.includes("--api-key")) configureReflexioSetup(args);
+  const pluginRoot = findClaudeCodePluginRoot();
+  if (pluginRoot) {
+    restorePublishHooksFromSource(pluginRoot);
+    if (setup.readOnly) {
+      prunePublishHooksForReadOnly(pluginRoot);
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+  }
 }
 
 async function runUninstall(args) {
@@ -1379,6 +1348,21 @@ async function runUninstall(args) {
   );
 }
 
+async function runSetup(args) {
+  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
+  if (!bash) {
+    process.stderr.write("error: bash is required to run claude-smart setup.\n");
+    process.exit(1);
+  }
+  const script = join(PACKAGE_ROOT, "scripts", "setup-claude-smart.sh");
+  if (!existsSync(script)) {
+    process.stderr.write(`error: setup script not found at ${script}\n`);
+    process.exit(1);
+  }
+  const code = await runChecked(bash, [script, ...args], { cwd: PACKAGE_ROOT });
+  if (code !== 0) process.exit(code);
+}
+
 async function runInstall(args) {
   if (parseHost(args) === "codex") {
     await runInstallCodex(args);
@@ -1394,8 +1378,8 @@ async function runInstall(args) {
   }
 
   const source = parseSource(args);
-  const readOnly = parseReadOnly(args);
-  configureReflexioSetup(args);
+  const setup = configureReflexioSetup();
+  const readOnly = setup.readOnly;
 
   const steps = [
     { args: ["plugin", "marketplace", "add", source], label: "Adding marketplace…" },
@@ -1414,6 +1398,7 @@ async function runInstall(args) {
 
   try {
     const pluginRoot = await bootstrapClaudeCodeInstall();
+    restorePublishHooksFromSource(pluginRoot);
     if (readOnly) {
       prunePublishHooksForReadOnly(pluginRoot);
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
@@ -1448,8 +1433,8 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
-  const readOnly = parseReadOnly(args);
-  configureReflexioSetup(args);
+  const setup = configureReflexioSetup();
+  const readOnly = setup.readOnly;
 
   const marketplaceRoot = copyCodexMarketplace();
   if (readOnly) {
@@ -1591,6 +1576,11 @@ async function main() {
     return;
   }
 
+  if (cmd === "setup") {
+    await runSetup(args.slice(1));
+    return;
+  }
+
   if (cmd === "uninstall") {
     await runUninstall(args.slice(1));
     return;
@@ -1620,4 +1610,5 @@ module.exports = {
   patchCodexHooksForNode,
   platformSupportError,
   prunePublishHooksForReadOnly,
+  restorePublishHooksFromSource,
 };

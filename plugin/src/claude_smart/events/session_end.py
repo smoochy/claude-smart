@@ -51,7 +51,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     session_id = payload.get("session_id")
     if not session_id:
         return None
-    project_id = ids.resolve_project_id(payload.get("cwd"))
+    project_id = ids.resolve_user_id(payload.get("cwd"))
 
     _maybe_synthesize_assistant_anchor(
         session_id=session_id,

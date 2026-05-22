@@ -36,7 +36,7 @@ def handle(payload: dict[str, Any]) -> None:
         hook.emit_continue()
         return
 
-    project_id = ids.resolve_project_id(payload.get("cwd"))
+    project_id = ids.resolve_user_id(payload.get("cwd"))
     try:
         emitted = context_inject.emit_context(
             session_id=session_id,

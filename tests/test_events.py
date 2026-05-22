@@ -926,7 +926,7 @@ def test_stop_stamps_user_id_from_payload_cwd(
         ],
     )
     monkeypatch.setattr(
-        "claude_smart.events.stop.ids.resolve_project_id",
+        "claude_smart.events.stop.ids.resolve_user_id",
         lambda cwd=None: f"proj::{cwd}",
     )
     monkeypatch.setattr(
@@ -964,7 +964,7 @@ def _stub_user_prompt_adapter(
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Stub())
     monkeypatch.setattr(
-        "claude_smart.events.user_prompt.ids.resolve_project_id",
+        "claude_smart.events.user_prompt.ids.resolve_user_id",
         lambda *_a, **_kw: "demo",
     )
 
@@ -973,7 +973,7 @@ def test_user_prompt_stamps_user_id_from_payload_cwd(session_dir, monkeypatch) -
     """User record carries user_id resolved from the hook payload's cwd."""
     _stub_user_prompt_adapter(monkeypatch)
     monkeypatch.setattr(
-        "claude_smart.events.user_prompt.ids.resolve_project_id",
+        "claude_smart.events.user_prompt.ids.resolve_user_id",
         lambda cwd=None: f"proj::{cwd}",
     )
     user_prompt.handle({"session_id": "s1", "prompt": "hello", "cwd": "/some/repo"})
@@ -1085,7 +1085,7 @@ def test_user_prompt_buffers_even_when_search_raises(session_dir, monkeypatch) -
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Boom())
     monkeypatch.setattr(
-        "claude_smart.events.user_prompt.ids.resolve_project_id",
+        "claude_smart.events.user_prompt.ids.resolve_user_id",
         lambda *_a, **_kw: "demo",
     )
     buf = io.StringIO()
@@ -1686,7 +1686,7 @@ def _stub_pretool_adapter(
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Stub())
     monkeypatch.setattr(
-        "claude_smart.events.pre_tool.ids.resolve_project_id",
+        "claude_smart.events.pre_tool.ids.resolve_user_id",
         lambda *_a, **_kw: "demo",
     )
 

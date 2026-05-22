@@ -45,10 +45,29 @@ def test_resolve_handles_missing_git_binary(tmp_path, monkeypatch) -> None:
     assert ids.resolve_project_id(tmp_path) == tmp_path.name
 
 
-def test_resolve_uses_project_id_even_when_api_key_env_is_configured(
-    tmp_path, monkeypatch
-) -> None:
+def test_resolve_project_id_ignores_user_id_override(tmp_path, monkeypatch) -> None:
+    _isolate_git_env(monkeypatch)
     monkeypatch.setenv("REFLEXIO_API_KEY", "rflx-test-key")
-    monkeypatch.setenv("REFLEXIO_USER_ID", "legacy-user")
+    monkeypatch.setenv("REFLEXIO_USER_ID", "override-user")
 
+    # resolve_project_id always reflects the working directory; the override
+    # only applies to resolve_user_id.
     assert ids.resolve_project_id(tmp_path) == tmp_path.name
+
+
+def test_resolve_user_id_returns_env_override(tmp_path, monkeypatch) -> None:
+    _isolate_git_env(monkeypatch)
+    monkeypatch.setenv("REFLEXIO_USER_ID", "override-user")
+    assert ids.resolve_user_id(tmp_path) == "override-user"
+
+
+def test_resolve_user_id_falls_back_to_project_id(tmp_path, monkeypatch) -> None:
+    _isolate_git_env(monkeypatch)
+    monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+    assert ids.resolve_user_id(tmp_path) == tmp_path.name
+
+
+def test_resolve_user_id_ignores_blank_override(tmp_path, monkeypatch) -> None:
+    _isolate_git_env(monkeypatch)
+    monkeypatch.setenv("REFLEXIO_USER_ID", "   ")
+    assert ids.resolve_user_id(tmp_path) == tmp_path.name

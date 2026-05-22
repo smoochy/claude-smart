@@ -242,7 +242,7 @@ def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> 
     monkeypatch.setattr(
         stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
     )
-    monkeypatch.setattr(stop.ids, "resolve_project_id", lambda *_a, **_kw: "demo")
+    monkeypatch.setattr(stop.ids, "resolve_user_id", lambda *_a, **_kw: "demo")
 
     stop.handle(
         {
@@ -417,7 +417,7 @@ def test_codex_stop_resolves_text_citations_from_last_assistant_message(
 ) -> None:
     runtime.set_host(runtime.HOST_CODEX)
     monkeypatch.setattr(stop.publish, "publish_unpublished", lambda **_kw: ("ok", 1))
-    monkeypatch.setattr(stop.ids, "resolve_project_id", lambda *_a, **_kw: "demo")
+    monkeypatch.setattr(stop.ids, "resolve_user_id", lambda *_a, **_kw: "demo")
     state.append_injected(
         "s1",
         [
@@ -509,7 +509,7 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
 
     assert rc == 0
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_path.read_text()
+    assert not env_path.exists()
     config = config_path.read_text()
     assert "plugin_hooks = true" in config
     assert '[plugins."claude-smart@reflexioai"]' in config

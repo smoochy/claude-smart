@@ -3,10 +3,19 @@
 This guide explains how to run claude-smart against the managed Reflexio
 service instead of the local Reflexio backend.
 
-Managed mode is opt-in. If you install claude-smart without an API key, setup
-uses the current local backend flow and stores data on your machine. If you pass
-an API key, setup writes managed-service credentials to `~/.reflexio/.env` and
-hooks send learning data to `https://www.reflexio.ai/`.
+Default installs stay local and need no managed setup:
+
+```bash
+npx claude-smart install
+```
+
+Use the setup flow for non-local configuration: managed Reflexio, read-only
+managed installs, global sharing, or switching an existing managed setup back to
+local mode.
+
+```bash
+npx claude-smart setup
+```
 
 ## When to Use Managed Mode
 
@@ -22,161 +31,168 @@ Use local mode when you want:
 - Offline-friendly semantic search and extraction.
 - No external Reflexio service dependency.
 
-## Install with Managed Reflexio
+## Non-Local Setup
 
-Set your managed Reflexio API key in your shell:
-
-```bash
-export REFLEXIO_API_KEY="rflx-your-api-key"
-```
-
-Install for Claude Code:
+Run the interactive setup command:
 
 ```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart install --api-key "$REFLEXIO_API_KEY"
+npx claude-smart setup
 ```
 
-Or, if you use uv:
+The script prompts for:
 
-```bash
-uvx claude-smart install --api-key "$REFLEXIO_API_KEY"
+- Host: Claude Code, Codex, or both.
+- Mode: choose `managed Reflexio` for remote/non-local setup.
+- Reflexio API key.
+- Read-only mode: choose `yes` to read existing managed skills without
+  publishing local interactions.
+- Sharing scope: choose `project` for the default project-scoped identity, or
+  `global` to share skills across projects.
+
+After collecting those values, setup rewrites the claude-smart entries in
+`~/.reflexio/.env` and then installs or updates the selected host. Restart
+Claude Code or fully quit and reopen Codex so the installed hooks reload.
+
+Do not pass managed options to `npx claude-smart install`; install reads the
+env file written by setup.
+
+## Setup Options
+
+### Host
+
+The host prompt controls where the plugin is installed after the env file is
+written.
+
+Choose `Claude Code` when you use Anthropic's local Claude Code app and want the
+Claude Code plugin installed or updated. Setup runs the normal Claude Code
+install path after writing `~/.reflexio/.env`.
+
+Choose `Codex` when you use Codex locally and want the Codex plugin installed
+or updated. Setup runs the Codex install path and prepares Codex hooks.
+
+Choose `both` when you use both hosts on the same machine. Both hosts read the
+same `~/.reflexio/.env`, so one managed configuration applies to both Claude
+Code and Codex.
+
+### Mode
+
+Choose `managed Reflexio` for non-local setup. Managed mode writes a remote
+`REFLEXIO_URL` and `REFLEXIO_API_KEY`, removes local-only claude-smart provider
+flags, and makes hooks read and publish through the managed Reflexio service.
+
+Choose `local` only when you want to switch back to local storage and local
+backend behavior. Local mode does not create `~/.reflexio/.env`; if the file
+already exists, setup removes managed keys and deletes the file if nothing is
+left.
+
+### Reflexio API Key
+
+Managed mode requires a Reflexio API key. Setup writes it as:
+
+```env
+REFLEXIO_API_KEY="rflx-your-api-key"
 ```
 
-Install for Codex:
+The key must be non-empty and cannot contain whitespace. Setup validates that
+locally and does not call the network, so the flow works even before you have
+verified connectivity.
 
-```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
+On rerun, setup shows a masked default with only the last four characters
+visible. Press Enter to keep the current key. If you paste a real key visibly in
+a terminal recording, chat, or shared shell, rotate it afterward.
+
+### Read-Only Mode
+
+Choose `yes` for read-only mode when this machine should use managed skills but
+should not publish local interaction data. Setup writes:
+
+```env
+CLAUDE_SMART_READ_ONLY="1"
 ```
 
-Or, if you use uv:
+During install or update, claude-smart prunes the hooks that publish
+interactions. The assistant can still retrieve existing managed profiles,
+project skills, and shared skills.
 
-```bash
-uvx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY"
+Choose `no` when this machine should both read from managed Reflexio and publish
+new learning data back to it. Setup removes `CLAUDE_SMART_READ_ONLY` from
+`~/.reflexio/.env`.
+
+### Sharing Scope
+
+Choose `project` for the default scoped behavior. Setup removes
+`REFLEXIO_USER_ID`, so claude-smart computes the Reflexio identity from the
+current project, normally from the current git project name. Everyone using the
+same managed project identity reads and publishes the same project-scoped
+skills, while unrelated projects remain separate.
+
+Choose `global` when you intentionally want skills shared across projects.
+Setup writes:
+
+```env
+REFLEXIO_USER_ID="global_user"
 ```
 
-Refresh an existing Claude Code install and apply the same managed
-configuration:
-
-```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart update --api-key "$REFLEXIO_API_KEY"
-```
-
-Or, if you use uv:
-
-```bash
-uvx claude-smart update --api-key "$REFLEXIO_API_KEY"
-```
-
-Use `npm exec --package claude-smart@latest -- claude-smart ...` for managed
-installs instead of bare `npx claude-smart ...`. Bare `npx` can resolve a stale
-cached or globally installed wrapper, even when the Claude Code plugin cache
-it installs is newer.
-
-Managed install output must include:
-
-```text
-Configured ~/.reflexio/.env for managed Reflexio
-```
-
-If the output says this instead, the managed API key was not applied:
-
-```text
-Seeded ~/.reflexio/.env with CLAUDE_SMART_USE_LOCAL_CLI, CLAUDE_SMART_USE_LOCAL_EMBEDDING.
-```
-
-The default managed URL is:
-
-```text
-https://www.reflexio.ai/
-```
-
-To override it:
-
-```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart install \
-  --api-key "$REFLEXIO_API_KEY" \
-  --reflexio-url "https://www.reflexio.ai/"
-```
-
-Or, with uv:
-
-```bash
-uvx claude-smart install \
-  --api-key "$REFLEXIO_API_KEY" \
-  --reflexio-url "https://www.reflexio.ai/"
-```
-
-After install, restart Claude Code or Codex so hooks reload with the new
-configuration.
-
-## Install with API Key in Read-Only Mode
-
-Read-only mode installs claude-smart without the publish-interactions hooks, so
-the local session does not send interaction data to Reflexio. Learned profiles
-and playbooks already stored in the managed account are still fetched and
-applied; only the publishing side is disabled.
-
-Install for Claude Code with managed Reflexio in read-only mode:
-
-```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart install --api-key "$REFLEXIO_API_KEY" --read-only
-```
-
-Or, if you use uv:
-
-```bash
-uvx claude-smart install --api-key "$REFLEXIO_API_KEY" --read-only
-```
-
-Install for Codex with managed Reflexio in read-only mode:
-
-```bash
-npm exec --yes --package claude-smart@latest -- \
-  claude-smart install --host codex --api-key "$REFLEXIO_API_KEY" --read-only
-```
-
-Or, if you use uv:
-
-```bash
-uvx claude-smart install --host codex --api-key "$REFLEXIO_API_KEY" --read-only
-```
-
-A successful read-only install prints:
-
-```text
-Configured ~/.reflexio/.env for managed Reflexio
-Installed read-only hook manifest; publish interactions hooks are disabled.
-```
-
-Restart Claude Code or Codex after install so hooks reload.
+With global sharing, all projects on this machine use the same Reflexio
+identity. That is useful for broad personal or team conventions that should
+apply everywhere, but it also means project-specific habits can become visible
+across projects if you teach them while global sharing is enabled.
 
 ## What Setup Writes
 
-Managed setup writes these values to `~/.reflexio/.env`:
+Managed setup cleans any previous claude-smart local or managed entries, then
+writes the current remote settings to `~/.reflexio/.env`:
 
 ```env
 REFLEXIO_URL="https://www.reflexio.ai/"
 REFLEXIO_API_KEY="rflx-your-api-key"
 ```
 
-The file is written with mode `0600`. Unknown keys, comments, and unrelated
-settings are preserved. Managed publishes use the same project id scoping as
-local mode.
-
-Local setup still writes only the local-mode flags:
+Depending on prompt choices, it may also write:
 
 ```env
-CLAUDE_SMART_USE_LOCAL_CLI=1
-CLAUDE_SMART_USE_LOCAL_EMBEDDING=1
+CLAUDE_SMART_READ_ONLY="1"
+REFLEXIO_USER_ID="global_user"
 ```
 
-`REFLEXIO_URL` and `REFLEXIO_API_KEY` are written only when `--api-key` is
-provided.
+The file is written with mode `0600`. Unknown keys, comments, and unrelated
+settings are preserved.
+
+When switching from local mode to managed mode, setup removes local-only flags:
+
+```env
+CLAUDE_SMART_USE_LOCAL_CLI=...
+CLAUDE_SMART_USE_LOCAL_EMBEDDING=...
+```
+
+If an existing `REFLEXIO_URL` points at localhost, setup replaces it with the
+managed Reflexio URL.
+
+Local setup does not create `~/.reflexio/.env`. If the file already exists,
+local setup removes managed keys:
+
+```env
+REFLEXIO_URL=...
+REFLEXIO_API_KEY=...
+REFLEXIO_USER_ID=...
+CLAUDE_SMART_READ_ONLY=...
+```
+
+If the file becomes empty after cleanup, setup deletes it.
+
+## Re-Run Behavior
+
+`npx claude-smart setup` is safe to rerun. It reads the current
+`~/.reflexio/.env`, uses existing values as prompt defaults, and masks existing
+API keys by showing only the last four characters.
+
+Press Enter to keep an existing value. Switching from managed to local removes
+managed keys. Switching from local to managed removes local-only flags, writes
+only the managed entries for the selected scope, and then installs or updates
+the selected host.
+
+Setup validates only that the API key is non-empty and contains no whitespace.
+It does not call the network, so setup remains offline-capable.
 
 ## Verify Managed Access
 
@@ -211,53 +227,10 @@ Authorization: Bearer <REFLEXIO_API_KEY>
 User-Agent: claude-smart
 ```
 
-The bearer token is attached only when the proxy target matches the configured
-`REFLEXIO_URL` origin. If you temporarily point the dashboard endpoint field at
-another URL, the proxy can forward the request, but it will not send the managed
-API key to that alternate origin.
-
 Open the dashboard the same way as local mode:
 
 - Claude Code: `/claude-smart:dashboard`
 - Codex: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
-
-The dashboard Environment page can view or update `REFLEXIO_URL` and
-`REFLEXIO_API_KEY`.
-
-## Citation Links
-
-When claude-smart is using a remote `REFLEXIO_URL`, citation links point to the
-managed Reflexio list pages for now:
-
-- Profiles: `https://www.reflexio.ai/profiles`
-- Playbooks: `https://www.reflexio.ai/playbooks`
-
-Local mode keeps using local dashboard rule links such as
-`http://localhost:3001/rules/...`.
-
-## Switch Back to Local Mode
-
-Edit `~/.reflexio/.env` and remove:
-
-```env
-REFLEXIO_URL=...
-REFLEXIO_API_KEY=...
-```
-
-Then make sure the local flags are present:
-
-```env
-CLAUDE_SMART_USE_LOCAL_CLI=1
-CLAUDE_SMART_USE_LOCAL_EMBEDDING=1
-```
-
-Restart Claude Code or Codex, or run:
-
-```bash
-bash ~/.reflexio/plugin-root/scripts/backend-service.sh start
-```
-
-Local mode will use the local Reflexio backend at `http://localhost:8071`.
 
 ## Troubleshooting
 
@@ -265,20 +238,16 @@ If managed learning does not appear:
 
 - Confirm `REFLEXIO_API_KEY` is present in `~/.reflexio/.env`.
 - Confirm `REFLEXIO_URL` points at `https://www.reflexio.ai/`.
-- Confirm install printed `Configured ~/.reflexio/.env for managed Reflexio`.
 - Run the `curl` command above and check for HTTP 200.
 - Restart Claude Code or Codex after changing `.env`.
 - Check `~/.claude-smart/backend.log` for hook startup messages.
 
-If the local backend starts unexpectedly, check for a localhost URL in
-`~/.reflexio/.env`. Any non-local `REFLEXIO_URL` puts claude-smart in managed
-mode; an absent or localhost URL uses local mode.
-
-If bare `npx claude-smart install --api-key ...` keeps writing local-mode flags,
-clear stale npm/global resolution and rerun the `npm exec --package` command:
+If the local backend starts unexpectedly, rerun:
 
 ```bash
-npm uninstall -g claude-smart || true
-rm -rf ~/.npm/_npx
-hash -r
+npx claude-smart setup
 ```
+
+Choose managed mode and confirm the API key. If you recently updated setup, also
+make sure the active plugin was updated and the host app was restarted; changing
+`.env` alone cannot activate managed behavior in a stale plugin copy.

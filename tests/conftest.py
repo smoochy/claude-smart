@@ -29,6 +29,7 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_READ_ONLY", raising=False)
 
 
 @pytest.fixture(autouse=True)

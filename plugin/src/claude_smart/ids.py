@@ -21,7 +21,11 @@ import os
 import subprocess  # noqa: S404 — git invocation with a fixed flag set.
 from pathlib import Path
 
+from claude_smart import env_config
+
 _LOGGER = logging.getLogger(__name__)
+
+_USER_ID_OVERRIDE_ENV = "REFLEXIO_USER_ID"
 
 
 def resolve_project_id(cwd: str | os.PathLike[str] | None = None) -> str:
@@ -57,3 +61,25 @@ def resolve_project_id(cwd: str | os.PathLike[str] | None = None) -> str:
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         _LOGGER.debug("git toplevel resolution failed: %s", exc)
     return base.name or "unknown-project"
+
+
+def resolve_user_id(cwd: str | os.PathLike[str] | None = None) -> str:
+    """Return the Reflexio ``user_id`` for the given working directory.
+
+    Honors the ``REFLEXIO_USER_ID`` env var as an explicit override (e.g. so a
+    user can point multiple projects at a single Reflexio identity), and
+    otherwise falls back to :func:`resolve_project_id`. The env var is
+    loaded from ``~/.reflexio/.env`` before reading the process environment so
+    CLI commands and hooks use the same identity resolution.
+
+    Args:
+        cwd: Working directory to resolve when falling back to the project id.
+
+    Returns:
+        str: The override value if set and non-empty, else the project id.
+    """
+    env_config.load_reflexio_env()
+    override = os.environ.get(_USER_ID_OVERRIDE_ENV, "").strip()
+    if override:
+        return override
+    return resolve_project_id(cwd)

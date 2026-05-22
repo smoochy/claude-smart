@@ -27,6 +27,7 @@
   },
   "files": [
     "bin",
+    "scripts/setup-claude-smart.sh",
     ".agents/plugins/marketplace.json",
     "plugin",
     "!plugin/**/__pycache__",

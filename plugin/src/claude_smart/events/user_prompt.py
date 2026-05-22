@@ -50,7 +50,7 @@ def handle(payload: dict[str, Any]) -> None:
     if not session_id or not prompt:
         return
 
-    project_id = ids.resolve_project_id(payload.get("cwd"))
+    project_id = ids.resolve_user_id(payload.get("cwd"))
     state.append(
         session_id,
         {

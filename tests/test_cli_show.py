@@ -15,7 +15,7 @@ def test_show_reports_reflexio_read_errors(monkeypatch, capsys) -> None:
         def fetch_all(self, **_kwargs):
             return [], [], []
 
-    monkeypatch.setattr(cli.ids, "resolve_project_id", lambda: "claude-smart")
+    monkeypatch.setattr(cli.ids, "resolve_user_id", lambda: "claude-smart")
     monkeypatch.setattr(cli, "Adapter", BrokenAdapter)
 
     code = cli.cmd_show(SimpleNamespace(project=None))
@@ -37,7 +37,7 @@ def test_show_reports_empty_when_reflexio_read_succeeds(monkeypatch, capsys) -> 
         def fetch_all(self, **_kwargs):
             return [], [], []
 
-    monkeypatch.setattr(cli.ids, "resolve_project_id", lambda: "claude-smart")
+    monkeypatch.setattr(cli.ids, "resolve_user_id", lambda: "claude-smart")
     monkeypatch.setattr(cli, "Adapter", EmptyAdapter)
 
     code = cli.cmd_show(SimpleNamespace(project=None))

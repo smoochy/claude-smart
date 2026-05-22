@@ -105,11 +105,6 @@ install_complete() {
   [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
-  [ -f "$HOME/.reflexio/.env" ] || return 1
-  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
-    grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
-    grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
-  fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
   fi
@@ -432,8 +427,6 @@ fi
 # append our two opt-in flags there so `reflexio services start` picks
 # them up regardless of which directory the user runs it from.
 REFLEXIO_ENV="$HOME/.reflexio/.env"
-mkdir -p "$(dirname "$REFLEXIO_ENV")"
-touch "$REFLEXIO_ENV"
 claude_smart_env_quote() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
@@ -472,27 +465,11 @@ claude_smart_env_upsert() {
   fi
 }
 
-if [ "${CLAUDE_SMART_MANAGED_SETUP:-}" = "1" ] && [ -n "${REFLEXIO_API_KEY:-}" ]; then
-  REFLEXIO_URL="${REFLEXIO_URL:-https://www.reflexio.ai/}"
-  claude_smart_env_upsert REFLEXIO_URL "$REFLEXIO_URL"
-  claude_smart_env_upsert REFLEXIO_API_KEY "$REFLEXIO_API_KEY"
-  chmod 600 "$REFLEXIO_ENV"
-  echo "[claude-smart] configured managed Reflexio in $REFLEXIO_ENV" >&2
-elif [ -z "${REFLEXIO_API_KEY:-}" ]; then
-  if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
-    printf '\n# Route reflexio generation through the local Claude Code CLI\nCLAUDE_SMART_USE_LOCAL_CLI=1\n' >> "$REFLEXIO_ENV"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
-  fi
-  if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-    printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
-  fi
-fi
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but
 # requires paired quotes, so malformed or deliberately different values
 # (e.g. a remote reflexio URL) are preserved.
-if grep -qE '^REFLEXIO_URL=("http://localhost:8081/?"|http://localhost:8081/?)$' "$REFLEXIO_ENV"; then
+if [ -f "$REFLEXIO_ENV" ] && grep -qE '^REFLEXIO_URL=("http://localhost:8081/?"|http://localhost:8081/?)$' "$REFLEXIO_ENV"; then
   sed -i.bak -E \
     -e 's|^REFLEXIO_URL="http://localhost:8081(/?)"$|REFLEXIO_URL="http://localhost:8071\1"|' \
     -e 's|^REFLEXIO_URL=http://localhost:8081(/?)$|REFLEXIO_URL=http://localhost:8071\1|' \

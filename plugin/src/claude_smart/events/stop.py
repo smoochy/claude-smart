@@ -362,7 +362,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     # without this placeholder, those tools would be misattributed to the
     # next assistant turn.
     transcript_path = payload.get("transcript_path")
-    project_id = ids.resolve_project_id(payload.get("cwd"))
+    project_id = ids.resolve_user_id(payload.get("cwd"))
 
     entries: list[dict[str, Any]] = []
     if transcript_path:

@@ -8,6 +8,8 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from claude_smart import cli
 
 
@@ -131,86 +133,91 @@ def test_cmd_install_fails_when_dependency_bootstrap_fails(
     assert rc == 1
 
 
-def test_install_setup_default_seeds_only_local_flags(
+def test_install_setup_default_does_not_create_local_env(
     monkeypatch, tmp_path: Path
 ) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
 
-    cli._configure_reflexio_setup(
-        argparse.Namespace(api_key="", reflexio_url="https://www.reflexio.ai/")
-    )
+    read_only = cli._configure_reflexio_setup()
 
-    text = env_path.read_text()
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
-    assert "REFLEXIO_URL" not in text
-    assert "REFLEXIO_API_KEY" not in text
-    assert env_path.stat().st_mode & 0o777 == 0o600
+    assert read_only is False
+    assert not env_path.exists()
 
 
-def test_install_setup_api_key_configures_managed_reflexio(
+def test_install_setup_reads_managed_reflexio_from_env(
     monkeypatch,
     tmp_path: Path,
     capsys,
 ) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     env_path.parent.mkdir()
-    env_path.write_text("# keep\nUNKNOWN=value\n")
+    env_path.write_text(
+        '# keep\nUNKNOWN=value\nREFLEXIO_URL="https://managed.example/"\n'
+        'REFLEXIO_API_KEY="rflx-test-secret"\n'
+    )
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
 
-    cli._configure_reflexio_setup(
-        argparse.Namespace(
-            api_key="rflx-test-secret",
-            reflexio_url="https://managed.example/",
-        )
-    )
+    read_only = cli._configure_reflexio_setup()
 
     text = env_path.read_text()
     assert "# keep" in text
     assert "UNKNOWN=value" in text
     assert 'REFLEXIO_URL="https://managed.example/"' in text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
-    assert "REFLEXIO_USER_ID=" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI" not in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
-    assert env_path.stat().st_mode & 0o777 == 0o600
+    assert read_only is False
     out = capsys.readouterr().out
     assert "rflx-****cret" in out
     assert "rflx-test-secret" not in out
 
 
-def test_install_setup_api_key_preserves_existing_unrelated_user_id(
+def test_install_setup_reads_read_only_from_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     env_path.parent.mkdir()
-    env_path.write_text('REFLEXIO_USER_ID="existing-user"\n')
+    env_path.write_text(
+        'REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_READ_ONLY="1"\n'
+    )
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
 
-    cli._configure_reflexio_setup(
-        argparse.Namespace(
-            api_key="rflx-test-secret",
-            reflexio_url="https://managed.example/",
-        )
-    )
+    read_only = cli._configure_reflexio_setup()
 
-    text = env_path.read_text()
-    assert 'REFLEXIO_USER_ID="existing-user"' in text
+    assert read_only is True
 
 
-def test_install_parser_defaults_managed_url_only_when_api_key_is_present() -> None:
-    args = cli._build_parser().parse_args(["install", "--api-key", "rflx-key"])
+def test_install_setup_ignores_stale_url_without_api_key(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setenv("REFLEXIO_URL", "https://stale.example/")
 
-    assert args.api_key == "rflx-key"
-    assert args.reflexio_url == "https://www.reflexio.ai/"
+    read_only = cli._configure_reflexio_setup()
+
+    assert read_only is False
+    assert "REFLEXIO_URL" not in os.environ
 
 
-def test_install_parser_accepts_read_only() -> None:
-    args = cli._build_parser().parse_args(["install", "--read-only"])
+def test_install_parser_keeps_plain_install() -> None:
+    args = cli._build_parser().parse_args(["install"])
 
-    assert args.read_only is True
+    assert args.host == "claude-code"
+    assert args.source == "ReflexioAI/claude-smart"
+
+
+def test_install_parser_no_longer_accepts_managed_flags() -> None:
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["install", "--api-key", "rflx-key"])
+
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["install", "--read-only"])
 
 
 def test_read_only_prunes_publish_hooks_but_keeps_runtime_hooks(tmp_path: Path) -> None:
@@ -308,30 +315,42 @@ def test_read_only_prunes_publish_hooks_but_keeps_runtime_hooks(tmp_path: Path) 
     assert any("codex session-start" in command for command in codex_commands)
 
 
-def test_update_parser_accepts_api_key_for_managed_config() -> None:
-    args = cli._build_parser().parse_args(["update", "--api-key", "rflx-key"])
+def test_restore_publish_hooks_from_source_restores_pruned_manifest(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    hooks_dir = plugin_root / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "hooks.json").write_text('{"hooks": {"SessionStart": []}}\n')
 
-    assert args.api_key == "rflx-key"
-    assert args.reflexio_url == "https://www.reflexio.ai/"
+    cli._restore_publish_hooks_from_source(plugin_root)
+
+    restored = json.loads((hooks_dir / "hooks.json").read_text())["hooks"]
+    assert "Stop" in restored
+    assert "SessionEnd" in restored
 
 
-def test_cmd_update_api_key_configures_managed_reflexio(
+def test_update_parser_no_longer_accepts_api_key() -> None:
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["update", "--api-key", "rflx-key"])
+
+
+def test_cmd_update_reads_managed_reflexio_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'
+    )
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(
         cli.subprocess, "run", lambda *a, **kw: argparse.Namespace(returncode=0)
     )
 
-    rc = cli.cmd_update(
-        argparse.Namespace(
-            api_key="rflx-test-secret",
-            reflexio_url="https://managed.example/",
-        )
-    )
+    rc = cli.cmd_update(argparse.Namespace())
 
     assert rc == 0
     text = env_path.read_text()

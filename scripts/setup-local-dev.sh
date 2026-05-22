@@ -419,11 +419,7 @@ if [ "$SETUP_CODEX" = "1" ]; then
   fi
   log "installing local claude-smart plugin for Codex..."
   rm -f "$HOME/plugins/claude-smart"
-  if [ "$READ_ONLY" = "1" ]; then
-    (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex --read-only)
-  else
-    (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
-  fi
+  (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
 fi
 
 if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then

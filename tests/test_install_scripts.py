@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
+SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
@@ -267,15 +268,16 @@ def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
     assert "remote configured at $REFLEXIO_URL" in backend
 
 
-def test_smart_install_keeps_local_flags_local_mode_only() -> None:
+def test_smart_install_does_not_create_local_env_defaults() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
     lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
-    assert 'if [ -z "${REFLEXIO_API_KEY:-}" ]; then' in script
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
+    assert 'touch "$REFLEXIO_ENV"' not in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" not in script
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" not in script
     assert "claude_smart_source_reflexio_env" in script
     assert "CLAUDE_SMART_READ_ONLY" in lib
+    assert "REFLEXIO_USER_ID" in lib
 
 
 def test_reflexio_env_file_overrides_stale_managed_process_env(
@@ -333,22 +335,263 @@ def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
     assert result.stdout.strip() == "1"
 
 
+def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess[str]:
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_SETUP_NO_INSTALL"] = "1"
+    env["REFLEXIO_ENV_PATH"] = str(tmp_path / ".reflexio" / ".env")
+    return subprocess.run(
+        ["/bin/bash", str(SETUP_CLAUDE_SMART)],
+        input=stdin,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_setup_script_local_mode_does_not_create_env(tmp_path: Path) -> None:
+    result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".reflexio" / ".env").exists()
+
+
+def test_setup_script_local_mode_cleans_managed_keys(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        "# keep\nUNKNOWN=value\nREFLEXIO_URL=x\nREFLEXIO_API_KEY=y\n"
+        "REFLEXIO_USER_ID=z\nCLAUDE_SMART_READ_ONLY=1\n"
+    )
+
+    result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+
+    assert result.returncode == 0, result.stderr
+    text = env_path.read_text()
+    assert "# keep" in text
+    assert "UNKNOWN=value" in text
+    assert "REFLEXIO_URL" not in text
+    assert "REFLEXIO_API_KEY" not in text
+    assert "REFLEXIO_USER_ID" not in text
+    assert "CLAUDE_SMART_READ_ONLY" not in text
+
+
+def test_setup_script_local_mode_deletes_empty_env(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_API_KEY="rflx-test"\n')
+
+    result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+
+    assert result.returncode == 0, result.stderr
+    assert not env_path.exists()
+
+
+def test_setup_script_managed_project_scoped(tmp_path: Path) -> None:
+    result = _run_setup_script(
+        tmp_path,
+        "claude-code\nmanaged\nrflx-test-secret\nno\nproject\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in text
+    assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
+    assert "REFLEXIO_USER_ID" not in text
+    assert "CLAUDE_SMART_READ_ONLY" not in text
+    assert "rotate" in result.stderr
+
+
+def test_setup_script_managed_rewrites_existing_managed_keys(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        "# keep\n"
+        "UNKNOWN=value\n"
+        'REFLEXIO_URL="https://old.example/"\n'
+        'REFLEXIO_API_KEY="rflx-old-one"\n'
+        'REFLEXIO_API_KEY="rflx-old-two"\n'
+        'CLAUDE_SMART_READ_ONLY="1"\n'
+        'REFLEXIO_USER_ID="old-user"\n'
+    )
+
+    result = _run_setup_script(
+        tmp_path,
+        "claude-code\nmanaged\nrflx-new-secret\nno\nproject\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = env_path.read_text()
+    assert "# keep" in text
+    assert "UNKNOWN=value" in text
+    assert text.count("REFLEXIO_URL=") == 1
+    assert text.count("REFLEXIO_API_KEY=") == 1
+    assert 'REFLEXIO_URL="https://old.example/"' in text
+    assert 'REFLEXIO_API_KEY="rflx-new-secret"' in text
+    assert "rflx-old" not in text
+    assert "CLAUDE_SMART_READ_ONLY" not in text
+    assert "REFLEXIO_USER_ID" not in text
+
+
+def test_setup_script_managed_removes_local_mode_variables(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        "# keep\n"
+        "UNKNOWN=value\n"
+        'REFLEXIO_URL="http://localhost:8071/"\n'
+        "CLAUDE_SMART_USE_LOCAL_CLI=1\n"
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n"
+    )
+
+    result = _run_setup_script(
+        tmp_path,
+        "claude-code\nmanaged\nrflx-new-secret\nno\nproject\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = env_path.read_text()
+    assert "# keep" in text
+    assert "UNKNOWN=value" in text
+    assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in text
+    assert 'REFLEXIO_API_KEY="rflx-new-secret"' in text
+    assert "localhost" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
+
+
+def test_setup_script_managed_global_read_only(tmp_path: Path) -> None:
+    result = _run_setup_script(
+        tmp_path,
+        "codex\nmanaged\nrflx-test-secret\nyes\nglobal\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
+    assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert 'REFLEXIO_USER_ID="global_user"' in text
+
+
+def test_setup_script_rerun_keeps_existing_api_key_on_enter(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\n'
+        'REFLEXIO_API_KEY="rflx-existing-secret"\n'
+        'REFLEXIO_USER_ID="global_user"\n'
+    )
+
+    result = _run_setup_script(tmp_path, "\n\n\n\n\n")
+
+    assert result.returncode == 0, result.stderr
+    text = env_path.read_text()
+    assert 'REFLEXIO_API_KEY="rflx-existing-secret"' in text
+    assert 'REFLEXIO_USER_ID="global_user"' in text
+    assert "****cret" in result.stderr
+
+
+def test_setup_script_rerun_preserves_custom_global_user_id(tmp_path: Path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\n'
+        'REFLEXIO_API_KEY="rflx-existing-secret"\n'
+        'REFLEXIO_USER_ID="custom-user"\n'
+    )
+
+    result = _run_setup_script(tmp_path, "\n\n\n\n\n")
+
+    assert result.returncode == 0, result.stderr
+    assert 'REFLEXIO_USER_ID="custom-user"' in env_path.read_text()
+
+
+def test_setup_script_rejects_whitespace_api_key(tmp_path: Path) -> None:
+    result = _run_setup_script(
+        tmp_path,
+        "claude-code\nmanaged\nbad key\nrflx-good-key\nno\nproject\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "must not contain whitespace" in result.stderr
+    assert (
+        'REFLEXIO_API_KEY="rflx-good-key"'
+        in (tmp_path / ".reflexio" / ".env").read_text()
+    )
+
+
+def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "installer.configureReflexioSetup();"
+        "process.stdout.write(process.env.REFLEXIO_URL || '');"
+    )
+    env = _isolated_env(tmp_path)
+    env["REFLEXIO_URL"] = "https://stale.example/"
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
 def test_node_installer_supports_managed_reflexio_setup() -> None:
     installer = NODE_INSTALLER.read_text()
 
     assert 'const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";' in installer
-    assert 'parseOptionalArg(args, "--api-key")' in installer
-    assert 'parseOptionalArg(args, "--reflexio-url")' in installer
+    assert 'cmd === "setup"' in installer
+    assert "setup-claude-smart.sh" in installer
+    assert 'parseOptionalArg(args, "--api-key")' not in installer
+    assert '"--read-only"' not in installer
     assert "REFLEXIO_API_KEY" in installer
     assert "CLAUDE_SMART_MANAGED_SETUP" in installer
-    assert "configureReflexioSetup(args)" in installer
+    assert "configureReflexioSetup()" in installer
     assert "maskSecret(apiKey)" in installer
     script = SMART_INSTALL.read_text()
-    assert 'CLAUDE_SMART_MANAGED_SETUP:-}" = "1"' in script
-    assert "configured managed Reflexio" in script
+    assert "configured managed Reflexio" not in script
 
 
-def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
+def test_node_installer_restores_publish_hooks_from_source(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    plugin_root = tmp_path / "plugin"
+    hooks = plugin_root / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "hooks.json").write_text('{"hooks":{"SessionStart":[]}}\n')
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.restorePublishHooksFromSource({json.dumps(str(plugin_root))});"
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    restored = json.loads((hooks / "hooks.json").read_text())["hooks"]
+    assert "Stop" in restored
+    assert "SessionEnd" in restored
+
+
+def test_node_install_reads_managed_env_and_bootstraps_latest_cache(
     tmp_path: Path,
 ) -> None:
     node = shutil.which("node")
@@ -387,9 +630,14 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
 
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'
+    )
 
     result = subprocess.run(
-        [node, str(NODE_INSTALLER), "install", "--api-key", "rflx-test-secret"],
+        [node, str(NODE_INSTALLER), "install"],
         env=env,
         text=True,
         capture_output=True,
@@ -397,16 +645,16 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Configured" in result.stdout
+    assert "Using managed Reflexio" in result.stdout
     assert f"Prepared claude-smart runtime at {new_root}" in result.stdout
-    env_text = (tmp_path / ".reflexio" / ".env").read_text()
+    env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
     assert "REFLEXIO_USER_ID=" not in env_text
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == new_root
 
 
-def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
+def test_npx_install_reads_managed_env(tmp_path: Path) -> None:
     npm = shutil.which("npm")
     npx = shutil.which("npx")
     if not npm or not npx:
@@ -454,6 +702,11 @@ def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["npm_config_cache"] = str(tmp_path / "npm-cache")
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'
+    )
 
     result = subprocess.run(
         [
@@ -463,8 +716,6 @@ def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
             str(package_path),
             "claude-smart",
             "install",
-            "--api-key",
-            "rflx-test-secret",
         ],
         env=env,
         text=True,
@@ -473,15 +724,15 @@ def test_npx_install_api_key_writes_managed_env(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Configured" in result.stdout
-    env_text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert "Using managed Reflexio" in result.stdout
+    env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
     assert "REFLEXIO_USER_ID=" not in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI" not in env_text
 
 
-def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
+def test_node_update_reads_managed_env(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
@@ -496,9 +747,14 @@ def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
 
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'
+    )
 
     result = subprocess.run(
-        [node, str(NODE_INSTALLER), "update", "--api-key", "rflx-test-secret"],
+        [node, str(NODE_INSTALLER), "update"],
         env=env,
         text=True,
         capture_output=True,
@@ -507,8 +763,8 @@ def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "claude-smart updated" in result.stdout
-    assert "Configured" in result.stdout
-    env_text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert "Using managed Reflexio" in result.stdout
+    env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
     assert "REFLEXIO_USER_ID=" not in env_text
@@ -592,7 +848,8 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "installing/updating claude-smart@reflexioai-local" in script
     assert "--read-only" in script
     assert "CLAUDE_SMART_READ_ONLY" in script
-    assert "node bin/claude-smart.js install --host codex --read-only" in script
+    assert "node bin/claude-smart.js install --host codex --read-only" not in script
+    assert "node bin/claude-smart.js install --host codex" in script
     assert 'USER_SETTINGS_FILE="$HOME/.claude/settings.json"' in script
     assert 'enabled = data.get("enabledPlugins")' in script
     assert 'data["enabledPlugins"] = {}' in script

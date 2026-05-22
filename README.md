@@ -81,9 +81,6 @@ Four things this changes:
 npx claude-smart install     # or: uvx claude-smart install
 ```
 
-Use `--read-only` to install context-loading hooks without the hooks that
-publish interactions for learning.
-
 Then restart Claude Code.
 
 Requires Node.js (for `npx`) or uv (for `uvx`) to already exist.
@@ -112,8 +109,6 @@ claude plugin uninstall claude-smart@reflexioai
 ```bash
 npx claude-smart install --host codex
 ```
-
-Add `--read-only` to skip the publish interactions hook.
 
 Then fully quit and reopen Codex so hooks reload.
 
