@@ -234,6 +234,46 @@ Open the dashboard the same way as local mode:
 
 ## Troubleshooting
 
+If `npx claude-smart setup` prints `unknown command 'setup'`, the machine is
+running an older cached, global, or local claude-smart wrapper. The published
+`claude-smart` package includes setup; force npm to resolve that package
+instead of reusing an existing wrapper:
+
+```bash
+npx --yes claude-smart setup
+```
+
+Or use `npm exec` explicitly:
+
+```bash
+npm exec --yes --package claude-smart -- claude-smart setup
+```
+
+If either command still reaches the stale wrapper, remove the global install
+and npx cache, then rerun the pinned command:
+
+```bash
+npm uninstall -g claude-smart || true
+rm -rf ~/.npm/_npx
+hash -r
+npx --yes claude-smart setup
+```
+
+To confirm which wrapper npm is resolving, run:
+
+```bash
+npx --yes claude-smart --help
+```
+
+The help output should include:
+
+```text
+npx claude-smart setup
+```
+
+The old wrapper may also have left local flags in `~/.reflexio/.env`; rerunning
+setup in managed mode removes those local-only entries.
+
 If managed learning does not appear:
 
 - Confirm `REFLEXIO_API_KEY` is present in `~/.reflexio/.env`.
