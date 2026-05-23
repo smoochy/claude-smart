@@ -46,33 +46,6 @@
 
 ---
 
-## Why Learning, Not Memory
-
-Most memory tools just record. Claude remembers what happened, but doesn't change what it does next.
-
-`claude-smart` focuses on learning instead.
-
-Four things this changes:
-
-- 💡 **Stop repeating the same mistakes:** Produces actionable skills Claude can follow next time; memory only records what happened.
-
-  > *Example:* a deploy fails after Claude bumps `prisma` from 5.x to 6.0; you tell it to roll back because 6.0 breaks nested writes in your order flow.<br>
-  > **Memory:** “deploy broke after prisma bump; user rolled back”<br>
-  > **Learning:** “treat major-version bumps of ORMs/DB drivers as breaking — verify with integration tests, not just unit tests”
-
-- 🚀 **Start from the optimized path:** Records and optimizes the steps that worked so Claude can reuse them, instead of re-exploring each session.
-  > *Example:* Claude spends several iterations trying to start the local dev environment before discovering that this repo requires `pnpm dev:all` instead of the usual `npm run dev`.<br>
-  > **Memory:** “user mentioned that `npm run dev` did not work”<br>
-  > **Learning:** “for this repo, always use `pnpm dev:all` to start the full local stack — `npm run dev` only starts the frontend and causes missing service errors”
-
-  Instead of re-exploring, Claude Code starts from the proven path—reducing planning steps, latency, and token usage.
-
-- 🌐 **Project-specific and shared skills:** Session memory disappears with the conversation. Project-specific skills preserve repo-local rules, while shared skills roll up patterns that should transfer across projects. Preferences stay scoped to the current project so per-repo preferences don't leak across projects.
-
-- 🪶 **Better context without prompt bloat:** Distilled, deduplicated skills stay in dozens of tokens—not thousands—even as the project grows.
-
----
-
 ## Quick Start
 
 ### Claude Code
@@ -126,18 +99,38 @@ Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-local
 
 > **Not supported:** Claude Code Cowork, claude.ai/code web, or remote Codex environments without local plugin hooks — they run outside your local machine, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
 
-### Vanilla OS support
+---
 
-| Platform | Status | Notes |
-| --- | --- | --- |
-| Apple Silicon macOS 14+ | Supported | Runtime bootstrap installs private Node/npm, uv, Python 3.12 deps, and dashboard deps. |
-| Windows x64 | Supported | Runtime bootstrap uses PowerShell for uv/Node archive extraction and patches Codex hooks to the Node wrapper. |
-| Linux | Supported when host hooks are local | Existing Linux behavior is preserved; install coverage depends on available Python wheels. |
-| Intel Mac, macOS 13 or older, Windows ARM | Not supported | Current local embedding/ML dependencies do not publish a complete native wheel set for these targets. |
+## Why Learning, Not Memory
 
-Network access is required during first install for npm, PyPI/uv, Node.js, and
-the first local embedding model download. The ONNX model cache lives at
-`~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/`.
+Most memory tools just record. Claude remembers what happened, but doesn't change what it does next.
+
+`claude-smart` focuses on learning instead.
+
+Four things this changes:
+
+- 💡 **Stop repeating the same mistakes:** Produces actionable skills Claude can follow next time; memory only records what happened.
+
+  > *Example:* a deploy fails after Claude bumps `prisma` from 5.x to 6.0; you tell it to roll back because 6.0 breaks nested writes in your order flow.<br>
+  > **Memory:** “deploy broke after prisma bump; user rolled back”<br>
+  > **Learning:** “treat major-version bumps of ORMs/DB drivers as breaking — verify with integration tests, not just unit tests”
+
+- 🚀 **Start from the optimized path:** Records and optimizes the steps that worked so Claude can reuse them, instead of re-exploring each session.
+  > *Example:* Claude spends several iterations trying to start the local dev environment before discovering that this repo requires `pnpm dev:all` instead of the usual `npm run dev`.<br>
+  > **Memory:** “user mentioned that `npm run dev` did not work”<br>
+  > **Learning:** “for this repo, always use `pnpm dev:all` to start the full local stack — `npm run dev` only starts the frontend and causes missing service errors”
+
+  Instead of re-exploring, Claude Code starts from the proven path—reducing planning steps, latency, and token usage.
+
+- 🌐 **Project-specific and shared skills:** Session memory disappears with the conversation. Project-specific skills preserve repo-local rules, while shared skills roll up patterns that should transfer across projects. Preferences stay scoped to the current project so per-repo preferences don't leak across projects.
+
+- 🪶 **Better context without prompt bloat:** Distilled, deduplicated skills stay in dozens of tokens—not thousands—even as the project grows.
+
+---
+
+## Demo
+
+https://github.com/user-attachments/assets/ed84d73a-d5b7-4a0d-ab2c-f2c060c3f276
 
 ---
 
