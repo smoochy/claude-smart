@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -18,6 +19,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
+USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
+DOCTOR_REFLEXIO = REPO_ROOT / "scripts" / "doctor-reflexio.py"
+SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
+CHECK_REFLEXIO_LOCK = REPO_ROOT / "scripts" / "check-reflexio-lock.py"
+VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
+RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
@@ -862,17 +869,287 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert 'enabled["claude-smart@reflexioai-local"] = True' in script
     assert 'enabled["claude-smart@reflexioai"] = False' in script
     assert "user-scope local enabled, @reflexioai disabled" in script
+    assert "install_editable_reflexio_into_codex_cache" in script
+    assert "write_local_reflexio_uv_source" in script
+    assert "[tool.uv.sources]" in script
+    assert (
+        'reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}'
+        in script
+    )
+    assert (
+        "writing local Reflexio source override into Codex marketplace snapshot"
+        in script
+    )
+    assert (
+        'uv pip install --project "$cache_root" --python "$cache_python" '
+        '-e "$REFLEXIO_ABS"'
+    ) in script
+    assert "Codex plugin cache imports Reflexio from" in script
+    assert "Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS" in script
 
 
 def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
     script = SETUP_LOCAL_DEV.read_text()
 
     assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
+    assert "REFLEXIO_PATH" in script
+    assert "expand_user_path()" in script
+    assert 'reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"' in script
+    assert (
+        'reflexio_env_path="$(expand_user_path '
+        '"$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"'
+    ) in script
     assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
-    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' in script
+    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' not in script
+    assert "git submodule update --init --recursive reflexio" not in script
+    assert 'bash "$REPO_ROOT/scripts/use-local-reflexio.sh"' in script
     assert "using Reflexio source at $REFLEXIO_ABS" in script
     assert "override_learning_stall" in script
     assert "selected Reflexio client does not support" in script
+    assert "verify source → make doctor-reflexio" in script
+
+
+def test_use_local_reflexio_installs_into_plugin_venv() -> None:
+    script = USE_LOCAL_REFLEXIO.read_text()
+    doctor = DOCTOR_REFLEXIO.read_text()
+    makefile = (REPO_ROOT / "Makefile").read_text()
+
+    assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
+    assert 'REFLEXIO_PATH="$(expand_user_path "$REFLEXIO_PATH")"' in script
+    assert 'uv sync --project "$PLUGIN_ROOT"' in script
+    assert 'resolve_venv_python()' in script
+    assert 'if ! PLUGIN_PYTHON="$(resolve_venv_python "$PLUGIN_ROOT")"; then' in script
+    assert '$venv_root/Scripts/python.exe' in script
+    assert (
+        'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
+        '-e "$REFLEXIO_PATH"'
+    ) in script
+    assert 'python3 "$REPO_ROOT/scripts/doctor-reflexio.py"' in script
+    assert "Detected source: {source}" in doctor
+    assert "Fix: bash scripts/use-local-reflexio.sh" in doctor
+    assert "using PyPI/other Reflexio even though a local checkout exists" in doctor
+    assert "doctor-reflexio:" in makefile
+    assert "python3 scripts/doctor-reflexio.py" in makefile
+
+
+def test_reflexio_release_sync_has_strict_release_checks() -> None:
+    sync_script = SYNC_REFLEXIO_DEP.read_text()
+    release_script = RELEASE_WITH_REFLEXIO.read_text()
+
+    assert "--release-checks" in sync_script
+    assert "fetch\", \"origin\", \"main\", \"--tags" in sync_script
+    assert "rev-parse\", \"origin/main" in sync_script
+    assert "tag\", \"--points-at\", \"HEAD" in sync_script
+    assert "v{version}" in sync_script
+    assert "PyPI reflexio-ai dependency" in sync_script
+    assert '"source": "pypi"' in sync_script
+    assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in release_script
+    assert '--reflexio-path "$REFLEXIO_PATH"' in release_script
+    assert "--check-pypi" in release_script
+    assert "--release-checks" in release_script
+
+
+def test_reflexio_vendor_release_uses_generated_bundle() -> None:
+    vendor_script = VENDOR_REFLEXIO.read_text()
+    release_script = RELEASE_WITH_REFLEXIO.read_text()
+    lock_script = CHECK_REFLEXIO_LOCK.read_text()
+    installer = NODE_INSTALLER.read_text()
+    smart_install = SMART_INSTALL.read_text()
+    lib = LIB.read_text()
+    gitignore = (REPO_ROOT / ".gitignore").read_text()
+
+    assert "plugin/vendor/reflexio" in vendor_script
+    assert "git\", \"-C\", str(reflexio_path), \"archive\"" in vendor_script
+    assert '"source": "vendor"' in vendor_script
+    assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
+    assert "package_include_paths" in vendor_script
+    assert "only-include" in vendor_script
+    assert (
+        'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"'
+        in release_script
+    )
+    assert 'PYTHON_BIN="${PYTHON:-python3}"' in release_script
+    assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
+    assert "uv pip install --project plugin --python" in release_script
+    assert "-e plugin/vendor/reflexio" in release_script
+    assert "OK: npm tarball includes vendored Reflexio files" in release_script
+    assert "Keep generated plugin/vendor/reflexio in place" in release_script
+    assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
+    assert "VALID_SOURCES" in lock_script
+    assert "source=pypi must not include vendor_path" in lock_script
+    assert "vendored Reflexio version mismatch" in lock_script
+    assert "read_lock_file(lock_path)" in lock_script
+    assert "reflexio.lock.json is not valid JSON" in lock_script
+    assert "top-level value must be a JSON object" in lock_script
+    assert "vendor_path must stay within repo root" in lock_script
+    assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
+    assert 'join(pluginRoot, "vendor", "reflexio")' in installer
+    assert '"pip", "install", "--project", pluginRoot' in installer
+    assert 'VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"' in smart_install
+    assert (
+        'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
+        '--quiet -e "$VENDORED_REFLEXIO"'
+    ) in smart_install
+    assert "vendored Reflexio install failed" in smart_install
+    assert "install_vendored_reflexio" in smart_install
+    assert "vendor_reflexio_pyproject" in lib
+    assert "/plugin/vendor/" in gitignore
+
+
+def test_check_reflexio_lock_reports_invalid_json(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    scripts.mkdir()
+    plugin.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    (plugin / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["reflexio-ai>=0.2.22"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text("{broken")
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "error: reflexio.lock.json is not valid JSON" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_check_reflexio_lock_requires_json_object(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    scripts.mkdir()
+    plugin.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    (plugin / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["reflexio-ai>=0.2.22"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text("[]\n")
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "top-level value must be a JSON object" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_check_reflexio_lock_rejects_out_of_repo_vendor_path(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    outside_vendor = tmp_path.parent / "outside-reflexio"
+    scripts.mkdir()
+    plugin.mkdir()
+    outside_vendor.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    dependency = "reflexio-ai>=0.2.22"
+    (plugin / "pyproject.toml").write_text(
+        f'[project]\ndependencies = ["{dependency}"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text(
+        json.dumps(
+            {
+                "package": "reflexio-ai",
+                "repo": "https://github.com/ReflexioAI/reflexio.git",
+                "version": "0.2.22",
+                "commit": "a" * 40,
+                "dependency": dependency,
+                "source": "vendor",
+                "vendor_path": str(outside_vendor),
+                "updated_at": "2026-05-24T00:00:00Z",
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py"), "--check-vendor"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "error: vendor_path must stay within repo root" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    vendor = plugin_root / "vendor" / "reflexio"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    vendor.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("")
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "python" ] && [ "$2" = "find" ]; then\n'
+        '  printf "%s\\n" "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "pip" ] && [ "$2" = "install" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+    assert "installing bundled Reflexio source" in result.stderr
+    uv_log = (tmp_path / "uv.log").read_text()
+    assert "sync --locked --python 3.12 --quiet" in uv_log
+    assert f"pip install --project {plugin_root}" in uv_log
+    assert f"-e {vendor}" in uv_log
+
+
+def test_vendor_release_is_npm_only() -> None:
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    developer = (REPO_ROOT / "DEVELOPER.md").read_text()
+
+    assert "release-npm:" in makefile
+    assert "check-pypi-compatible-reflexio:" in makefile
+    assert "source=vendor" in makefile
+    assert "make release-npm VERSION=..." in makefile
+    assert "make release-npm VERSION=<new-claude-smart-version>" in developer
+    assert "intentionally refuses to publish PyPI" in developer
 
 
 def test_backend_service_configures_shared_embedding_daemon() -> None:
@@ -1149,12 +1426,15 @@ def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
         "const pluginRoot = installer.codexMarketplacePluginRoot(root);"
         "const fs = require('fs');"
         "const path = require('path');"
-        "const manifest = JSON.parse(fs.readFileSync(path.join(root, '.agents/plugins/marketplace.json'), 'utf8'));"
+        "const manifestPath = path.join(root, '.agents/plugins/marketplace.json');"
+        "const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));"
         "console.log(JSON.stringify({"
         "root,"
         "path: manifest.plugins[0].source.path,"
         "pluginRoot,"
-        "hasManifest: fs.existsSync(path.join(pluginRoot, '.codex-plugin/plugin.json')),"
+        "hasManifest: fs.existsSync(path.join("
+        "pluginRoot, '.codex-plugin/plugin.json'"
+        ")),"
         "legacyPathExists: fs.existsSync(path.join(root, 'plugins/claude-smart'))"
         "}));"
     )
@@ -1251,16 +1531,28 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                             "hooks": [
                                 {"command": 'bash "$_R/scripts/smart-install.sh"'},
                                 {
-                                    "command": 'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'
+                                    "command": (
+                                        'bash "$_R/scripts/ensure-plugin-root.sh" '
+                                        '"$_R"'
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/backend-service.sh" start'
+                                    "command": (
+                                        'bash "$_R/scripts/backend-service.sh" '
+                                        "start"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/dashboard-service.sh" start'
+                                    "command": (
+                                        'bash "$_R/scripts/dashboard-service.sh" '
+                                        "start"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "session-start"
+                                    )
                                 },
                             ]
                         }
@@ -1269,7 +1561,10 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex user-prompt'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "user-prompt"
+                                    )
                                 }
                             ]
                         }
@@ -1278,7 +1573,10 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex post-tool'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "post-tool"
+                                    )
                                 }
                             ]
                         }
@@ -1287,7 +1585,9 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex stop'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex stop'
+                                    )
                                 }
                             ]
                         }
@@ -1310,7 +1610,8 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
         f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
-        ".then(() => console.log('done')).catch((err) => { console.error(err.message); process.exit(1); });"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
     env = os.environ.copy()
     env.update(
@@ -1377,7 +1678,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-start'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code session-start"
+                                    )
                                 }
                             ]
                         }
@@ -1386,7 +1690,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code stop'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code stop"
+                                    )
                                 }
                             ]
                         }
@@ -1395,10 +1702,16 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-end'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code session-end"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/backend-service.sh" session-end'
+                                    "command": (
+                                        'bash "$_R/scripts/backend-service.sh" '
+                                        "session-end"
+                                    )
                                 },
                             ]
                         }
@@ -1416,7 +1729,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "session-start"'
+                                    "command": (
+                                        '"/node" "/plugin/scripts/codex-hook.js" '
+                                        '"hook" "session-start"'
+                                    )
                                 }
                             ]
                         }
@@ -1425,7 +1741,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "stop"'
+                                    "command": (
+                                        '"/node" "/plugin/scripts/codex-hook.js" '
+                                        '"hook" "stop"'
+                                    )
                                 }
                             ]
                         }

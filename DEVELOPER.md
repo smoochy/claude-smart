@@ -11,10 +11,11 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/pyproject.toml` | Python manifest — shipped to PyPI via `uv build --project plugin` |
 | `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
-| `package.json` | npm manifest — only ships `bin/`, `README.md`, `LICENSE` |
+| `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
 | `plugin/.claude-plugin/plugin.json` | Plugin metadata read by Claude Code |
 | `.claude-plugin/marketplace.json` | Marketplace entry — `claude plugin marketplace add` reads this |
-| `reflexio/` | Submodule — Apache 2.0, storage + search + extraction backend |
+| `reflexio.lock.json` | Reflexio provenance — records the PyPI baseline or generated vendor bundle commit |
+| `plugin/vendor/reflexio/` | Generated release-only Reflexio bundle for npm artifacts; gitignored, not committed |
 | `plugin/dashboard/` | Next.js management UI for interactions, preferences, skills, configuration |
 | `Makefile` | Release automation |
 
@@ -193,6 +194,11 @@ make release VERSION=0.1.1
 7. `publish-pypi` → `rm -rf dist/ && uv build && uv publish`.
 8. `git push --follow-tags`.
 
+For a vendor-mode Reflexio release, run `make release-npm VERSION=...` after
+`bash scripts/release-with-reflexio.sh`. The generated vendor bundle is only in
+the npm tarball; `make release` intentionally refuses to publish PyPI while
+`reflexio.lock.json` says `source=vendor`.
+
 Because publish happens **before** the push, a registry failure (e.g. auth expired) leaves the commit and tag local — you can fix the cause and re-run `make publish && git push --follow-tags` without re-bumping.
 
 ### Partial / advanced flows
@@ -210,6 +216,9 @@ git push --follow-tags
 # Only one registry (e.g. if the other published successfully and you're retrying).
 make publish-npm
 make publish-pypi
+
+# Vendor-mode Reflexio release (npm only).
+make release-npm VERSION=0.1.1
 
 # Preview without uploading anything.
 make publish-dry
@@ -234,12 +243,12 @@ Before running `make release`:
 - [ ] `README.md` reflects any user-visible changes.
 - [ ] Hook behavior, CLI flags, env vars are unchanged — or a migration note is in the README.
 - [ ] `plugin/hooks/hooks.json` and `plugin/commands/*.md` render correctly in a local Claude Code session (smoke test: install from a local `directory` marketplace, start a session, run `/show`).
-- [ ] `reflexio` submodule is at the pinned SHA you want to ship against. Bump it explicitly if needed:
-  ```bash
-  cd reflexio && git pull && cd .. && git add reflexio && git commit -m "Bump reflexio submodule"
-  ```
+- [ ] If claude-smart needs new Reflexio behavior, choose a Reflexio release mode:
+  - PyPI mode: `reflexio-ai` is published, then `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` updates `plugin/pyproject.toml`, `plugin/uv.lock`, and `reflexio.lock.json`.
+  - Vendor mode: `bash scripts/release-with-reflexio.sh` generates `plugin/vendor/reflexio` and updates `reflexio.lock.json`; keep the generated vendor directory in place until npm publish completes.
+- [ ] `python scripts/check-reflexio-lock.py` passes.
 - [ ] `npm pack --dry-run --json` includes the root wrapper, marketplace metadata, plugin payload, dashboard sources, README, and LICENSE, and excludes `.venv`, `node_modules`, `.next/cache`, and Python caches.
-- [ ] If you touched `pyproject.toml` dependencies, `uv build` succeeds locally and the wheel's `METADATA` doesn't carry a `file://` path dep (common failure when `[tool.uv.sources]` leaks into the published wheel).
+- [ ] If you touched `pyproject.toml` dependencies, `uv build` succeeds locally and the wheel's `METADATA` does not carry any local path dependency.
 
 ## Common failures and fixes
 
@@ -250,11 +259,33 @@ Usually means the version already exists. Check `npm view claude-smart versions`
 Same as above for PyPI. Bump and re-release.
 
 **`uv build` produces a wheel that fails to install with `No matching distribution found for reflexio-ai`.**
-The `[tool.uv.sources]` override in `pyproject.toml` points `reflexio-ai` to a local path — fine for local dev, fatal for a published wheel. Either:
-1. Publish `reflexio-ai` to PyPI first, then remove the `[tool.uv.sources]` block before `make release`, or
-2. Drop `reflexio-ai` from the published package's `dependencies` and keep the install-time bootstrap (`plugin/scripts/smart-install.sh`) responsible for installing it inside the Claude Code plugin directory.
+The committed `plugin/pyproject.toml` must resolve `reflexio-ai` from PyPI. If this release only needs Reflexio through the npm plugin artifact, use vendor mode instead of raising the PyPI dependency to an unpublished Reflexio version:
 
-See README's "Step 1 — Install the plugin" section for the install flow that assumes option 2.
+```bash
+bash scripts/release-with-reflexio.sh
+```
+
+If this release needs the PyPI package dependency itself to require a newer published Reflexio version, publish that Reflexio version first, then run:
+
+```bash
+REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh
+```
+
+For non-standard worktree layouts, point the helper at the intended Reflexio checkout:
+
+```bash
+REFLEXIO_PATH=/path/to/reflexio-main bash scripts/release-with-reflexio.sh
+```
+
+Vendor mode verifies that the Reflexio checkout is clean, exports the committed HEAD into `plugin/vendor/reflexio`, and records the commit in `reflexio.lock.json`. PyPI mode additionally verifies that the Reflexio checkout matches `origin/main`, is tagged `v<version>`, and that `reflexio-ai==version` exists on PyPI.
+
+Manual equivalent:
+
+```bash
+python scripts/sync-reflexio-dep.py --write --check-pypi --release-checks
+uv lock --project plugin --upgrade-package reflexio-ai
+python scripts/check-reflexio-lock.py
+```
 
 **`make release` committed and tagged but `npm publish` failed after.**
 `publish` runs before `git push --follow-tags`, so nothing was pushed. Fix the cause (auth, network, registry), then:
@@ -276,27 +307,33 @@ rm -f package.json.bak pyproject.toml.bak .claude-plugin/*.bak
 
 ## Developing locally
 
-For iterating on claude-smart itself — editing hooks, the Python package, the dashboard, or the reflexio submodule — install from a clone and point the host at your working copy. End users don't need any of this; the `npx`/`uvx` install flow in the README covers them.
+For iterating on claude-smart itself — editing hooks, the Python package, the dashboard, or a side-by-side Reflexio checkout — install from a clone and point the host at your working copy. End users don't need any of this; the `npx`/`uvx` install flow in the README covers them.
 
 ### Local install overview
 
-You can flip each axis independently — e.g. local plugin + PyPI reflexio is a valid combination (you're touching hooks/slash commands/dashboard but not the backend), and so is remote plugin + local reflexio (smoke-test the shipped plugin against a patched backend).
+You can flip each axis independently — e.g. local plugin + PyPI Reflexio is a valid combination when you're touching hooks/slash commands/dashboard but not the backend. Local Reflexio development uses an editable install in the plugin virtualenv; the committed package metadata still resolves `reflexio-ai` from PyPI.
 
 | Axis | Local | Remote | Controlled by |
 | --- | --- | --- | --- |
 | **Plugin** — hooks, slash commands, Python package, dashboard | this repo's `plugin/` (marketplace `reflexioai-local`) | GitHub cache `~/.claude/plugins/cache/reflexioai/…` | `.claude/settings.local.json` → `enabledPlugins` |
-| **reflexio** — backend, extraction, storage | vendored submodule at `reflexio/` (editable) | PyPI wheel `reflexio-ai` | `plugin/pyproject.toml` → `[tool.uv.sources]` |
+| **Reflexio** — backend, extraction, storage | side-by-side checkout, usually `../reflexio` (editable install) | PyPI wheel `reflexio-ai`, or generated npm-only `plugin/vendor/reflexio` for fast releases | `scripts/use-local-reflexio.sh` for local dev; `reflexio.lock.json` + `plugin/pyproject.toml` for PyPI releases; `reflexio.lock.json` + generated vendor bundle for npm fast releases |
 
-Start every local install from a clone:
+Clone the repos side-by-side for local cross-repo development:
 
 ```bash
-git clone --recurse-submodules https://github.com/ReflexioAI/claude-smart.git
+mkdir -p workspace
+cd workspace
+git clone https://github.com/ReflexioAI/reflexio.git
+git clone https://github.com/ReflexioAI/claude-smart.git
 cd claude-smart
+bash scripts/use-local-reflexio.sh
 ```
+
+Edit both repos as needed. Open one PR in `reflexio` and one PR in `claude-smart`, then link the Reflexio PR from the claude-smart PR.
 
 ### Local install
 
-Use the one-shot setup when developing the plugin, dashboard, or local `reflexio` submodule:
+Use the one-shot setup when developing the plugin, dashboard, or local Reflexio checkout:
 
 ```bash
 bash scripts/setup-local-dev.sh                         # Claude Code local setup
@@ -307,16 +344,15 @@ bash scripts/setup-local-dev.sh --read-only             # Local setup without pu
 
 Idempotent. This single script handles the shared local-dev prep for every host — see its header comment for the full list, but in summary it:
 
-1. Initializes the `reflexio/` submodule.
-2. Uncomments `[tool.uv.sources]` in `plugin/pyproject.toml` (absolute path to the submodule) and hides the divergence with `git update-index --skip-worktree`.
-3. `uv sync` in `plugin/`.
-4. Appends `CLAUDE_SMART_USE_LOCAL_CLI=1` and `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` to `~/.reflexio/.env`.
-5. For `--host claude-code` (the default), prepares and refreshes the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope by replacing any stale `reflexioai-local` registration before running `claude plugin marketplace add`.
-6. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
-7. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
-8. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
-9. For `--host both`, force-sets `~/.reflexio/plugin-root` back to editable `plugin/` after the Codex install step, since the Codex installer may point it at the copied cache.
-10. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
+1. Runs `scripts/use-local-reflexio.sh`, which syncs `plugin/` and installs the side-by-side Reflexio checkout as editable without changing committed dependency metadata.
+2. Appends `CLAUDE_SMART_USE_LOCAL_CLI=1` and `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` to `~/.reflexio/.env`.
+3. For `--host claude-code` (the default), prepares and refreshes the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope by replacing any stale `reflexioai-local` registration before running `claude plugin marketplace add`.
+4. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
+5. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
+6. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
+7. For `--host codex`, writes a local-only `reflexio-ai` source override into the generated Codex marketplace/cache copies and installs the same side-by-side Reflexio checkout as editable into Codex's copied plugin cache venv, because Codex hooks run from `~/.codex/plugins/cache/...` instead of directly from this checkout.
+8. For `--host both`, force-sets `~/.reflexio/plugin-root` back to editable `plugin/` after the Codex install step, since the Codex installer may point it at the copied cache.
+9. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
 
 Then restart the target host. In a new Claude Code session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`. In Codex, `/plugins` should show `claude-smart` installed from the **ReflexioAI** marketplace.
 
@@ -438,62 +474,105 @@ Optional: if you juggle local and remote across different repos on the same mach
 - `plugin/commands/*.md`, `plugin/hooks/hooks.json` — picked up on the next Claude Code session.
 - `plugin/dashboard/` — the dashboard runs `npm run start` against prebuilt `.next/`, long-lived across sessions. Rebuild + restart: `/claude-smart:restart` or `claude-smart restart`.
 
-### Switching axis 2 — reflexio source (submodule ↔ PyPI)
+### Switching axis 2 — Reflexio source (editable checkout ↔ PyPI/vendor)
 
-Edit `plugin/pyproject.toml`. The `[tool.uv.sources]` block is what decides.
-
-```toml
-# local submodule (editable)
-[tool.uv.sources]
-reflexio-ai = { path = "/absolute/path/to/repo/reflexio", editable = true }
-```
-```toml
-# PyPI — just delete or comment out the block above
-# [tool.uv.sources]
-# reflexio-ai = { path = "/absolute/path/to/repo/reflexio", editable = true }
-```
-
-**Important — absolute path required.** `uv run --project <symlink>` resolves relative paths against the literal symlink, not its realpath. Since slash commands pass `~/.reflexio/plugin-root` as `--project`, a relative `../reflexio` would resolve to `$HOME/.reflexio/reflexio` (nonexistent). Always use the absolute path.
-
-**Note — git invisibility.** `setup-local-dev.sh` runs `git update-index --skip-worktree plugin/pyproject.toml plugin/uv.lock`, so edits to these files are **invisible** to `git status`. If you need to commit a genuine change:
+Use the helper script for local Reflexio development. It installs the side-by-side checkout into `plugin/.venv` as editable without writing local paths into `plugin/pyproject.toml`:
 
 ```bash
-git update-index --no-skip-worktree plugin/pyproject.toml plugin/uv.lock
-# stage hunks selectively, commit
-git update-index --skip-worktree plugin/pyproject.toml plugin/uv.lock
+bash scripts/use-local-reflexio.sh
+# or
+REFLEXIO_PATH=/absolute/path/to/reflexio bash scripts/use-local-reflexio.sh
 ```
 
-**Apply the change:**
+If you cloned both repos and are unsure which Reflexio source claude-smart is
+actually importing, run:
 
 ```bash
-cd plugin && uv sync --quiet
+make doctor-reflexio
+```
+
+If a sibling `../reflexio` checkout exists but the plugin environment is still
+using PyPI, the doctor exits non-zero and prints the fix command.
+
+Return to the locked PyPI dependency by syncing the plugin environment:
+
+```bash
+uv sync --project plugin --locked --reinstall-package reflexio-ai
 claude-smart restart                  # or /claude-smart:restart inside Claude Code
 ```
 
-`uv sync` re-resolves the dependency. The **backend service must be restarted** — it's a long-lived process on port 8071 with the old `reflexio-ai` already imported in memory, so editing `pyproject.toml` alone does nothing until the service reloads.
+The **backend service must be restarted** after switching sources — it's a long-lived process on port 8071 with the old `reflexio-ai` already imported in memory.
 
 Verify:
 
 ```bash
-uv run --project plugin python -c "import reflexio, os; print(reflexio.__version__); print(os.path.dirname(reflexio.__file__))"
+uv run --project plugin --no-sync python -c "import reflexio, os; print(reflexio.__version__); print(os.path.dirname(reflexio.__file__))"
 ```
 
-- Path into `reflexio/reflexio/` under this repo → **submodule** (editable).
-- Path into `…/site-packages/reflexio/` → **PyPI**.
+- Path into `workspace/reflexio/reflexio/` or another checkout → **editable local Reflexio**.
+- Path into `…/site-packages/reflexio/` → **PyPI** or an installed generated vendor copy.
+
+For installed npm releases, the setup wrapper runs `uv sync --locked` first. If the npm tarball contains `plugin/vendor/reflexio`, it then installs that bundled Reflexio source into the plugin environment. User installs do not clone GitHub.
+
+### Release flow with Reflexio
+
+If claude-smart does not need new Reflexio behavior, release claude-smart only; do not change the `reflexio-ai` dependency.
+
+If claude-smart needs unpublished Reflexio behavior, use vendor mode. The committed package metadata still points at the PyPI baseline, but the npm artifact carries the exact Reflexio source snapshot:
+
+```bash
+bash scripts/release-with-reflexio.sh
+```
+
+For non-standard worktree layouts:
+
+```bash
+REFLEXIO_PATH=/path/to/reflexio-main bash scripts/release-with-reflexio.sh
+```
+
+Commit:
+
+```text
+reflexio.lock.json
+```
+
+Keep generated `plugin/vendor/reflexio` in place until npm publish completes; it is gitignored but included in the npm tarball. Then release claude-smart to npm:
+
+```bash
+make release-npm VERSION=<new-claude-smart-version>
+```
+
+If claude-smart needs a newer published Reflexio package dependency, merge Reflexio, tag the release commit as `v<version>`, publish `reflexio-ai`, then run:
+
+```bash
+REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh
+```
+
+Commit:
+
+```text
+plugin/pyproject.toml
+plugin/uv.lock
+reflexio.lock.json
+```
+
+Then release claude-smart.
 
 ### Manual setup (alternative to setup-local-dev.sh)
 
 If you want to understand the pieces or do a subset:
 
 ```bash
-# 1. Clone + submodule
-git clone --recurse-submodules https://github.com/ReflexioAI/claude-smart.git
+# 1. Clone repos side-by-side
+mkdir -p workspace
+cd workspace
+git clone https://github.com/ReflexioAI/reflexio.git
+git clone https://github.com/ReflexioAI/claude-smart.git
 cd claude-smart
-git submodule update --init --recursive    # if you forgot --recurse-submodules
 
 # 2. Python deps
-cd plugin && uv sync && cd ..
-# Creates plugin/.venv/ and registers claude-smart + claude-smart-hook scripts.
+bash scripts/use-local-reflexio.sh
+# Creates plugin/.venv/, syncs claude-smart, and installs ../reflexio editable.
 
 # 3. Local providers (no API key needed)
 mkdir -p ~/.reflexio
@@ -504,9 +583,9 @@ grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' ~/.reflexio/.env 2>/dev/null \
 # The backend starts one shared embedding daemon on 127.0.0.1:8072.
 
 # 4. (Optional) start the backend manually instead of letting SessionStart spawn it
-cd plugin && BACKEND_PORT=8071 EMBEDDING_PORT=8072 uv run reflexio services start --only backend --no-reload
+cd plugin && BACKEND_PORT=8071 EMBEDDING_PORT=8072 uv run --no-sync reflexio services start --only backend --no-reload
 # Health check: curl http://localhost:8071/health  →  {"status":"healthy"}
-# Stop:         uv run reflexio services stop
+# Stop:         uv run --no-sync reflexio services stop
 ```
 
 Expected backend log lines:
@@ -542,7 +621,7 @@ readlink ~/.reflexio/plugin-root
 # → $PWD/plugin  (local)   or   ~/.claude/plugins/cache/reflexioai/claude-smart/<ver>  (remote)
 
 # Axis 2 — reflexio source
-uv run --project plugin python -c "import reflexio, os; print(reflexio.__version__); print(os.path.dirname(reflexio.__file__))"
+uv run --project plugin --no-sync python -c "import reflexio, os; print(reflexio.__version__); print(os.path.dirname(reflexio.__file__))"
 ```
 
 ### Exercising the install CLIs against a local marketplace
@@ -550,9 +629,9 @@ uv run --project plugin python -c "import reflexio, os; print(reflexio.__version
 Useful when you're modifying the `install` subcommand itself and want to test without re-publishing:
 
 ```bash
-uv run --project plugin claude-smart install --source $PWD    # Python path
+uv run --project plugin --no-sync claude-smart install --source $PWD    # Python path
 node bin/claude-smart.js install --source $PWD                # Node path
-uv run --project plugin claude-smart install --host codex      # Codex repo-local path
+uv run --project plugin --no-sync claude-smart install --host codex      # Codex repo-local path
 node bin/claude-smart.js install --host codex                  # Codex packaged-marketplace path
 ```
 
@@ -561,8 +640,8 @@ The Claude Code install commands accept either a GitHub `owner/repo` ref or an a
 ## Tests
 
 ```bash
-uv run --project plugin pytest tests/ -q   # claude-smart package tests (from repo root)
-cd reflexio && uv run pytest tests/server/llm/ -q -o 'addopts='   # reflexio patch tests
+uv run --project plugin pytest --rootdir . -o addopts= tests/ -q   # claude-smart package tests (from repo root)
+cd ../reflexio && uv run pytest tests/server/llm/ -q -o 'addopts='   # reflexio patch tests
 ```
 
 Run both locally before `make release`. There's no CI gate today — the release flow trusts the maintainer.
@@ -573,7 +652,7 @@ Useful for debugging without a live Claude Code session:
 
 ```bash
 echo '{"session_id":"dev-1","source":"startup","cwd":"'"$PWD"'"}' \
-  | uv run --project plugin python -m claude_smart.hook session-start
+  | uv run --project plugin --no-sync python -m claude_smart.hook session-start
 ```
 
 ## Manual smoke tests — credit-stall notification

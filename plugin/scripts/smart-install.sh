@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run once on plugin install. Pulls the reflexio submodule, syncs the
-# Python env, and flips on the claude-code LiteLLM provider in reflexio's
-# .env so extraction works with no external API key.
+# Run once on plugin install. Syncs the Python env and flips on the
+# claude-code LiteLLM provider in reflexio's .env so extraction works with no
+# external API key.
 #
 # On failure, writes the reason to ~/.claude-smart/install-failed so
 # hook_entry.sh can short-circuit and surface a user-visible message
@@ -109,6 +109,32 @@ install_complete() {
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
   fi
   return 0
+}
+
+install_vendored_reflexio() {
+  local VENDORED_REFLEXIO PLUGIN_PYTHON
+
+  VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"
+  [ -f "$VENDORED_REFLEXIO/pyproject.toml" ] || return 0
+
+  if claude_smart_is_windows; then
+    PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/Scripts/python.exe"
+  else
+    PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"
+  fi
+  if [ ! -x "$PLUGIN_PYTHON" ]; then
+    write_failure "plugin Python was not created by uv sync: $PLUGIN_PYTHON"
+  fi
+
+  echo "[claude-smart] installing bundled Reflexio source from $VENDORED_REFLEXIO" >&2
+  if uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet -e "$VENDORED_REFLEXIO" >&2; then
+    return 0
+  fi
+
+  echo "[claude-smart] warning: quiet vendored Reflexio install failed in $PLUGIN_ROOT; retrying with full output." >&2
+  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$VENDORED_REFLEXIO" >&2; then
+    write_failure "vendored Reflexio install failed in $PLUGIN_ROOT"
+  fi
 }
 
 write_success_marker() {
@@ -362,19 +388,6 @@ if install_complete; then
   exit 0
 fi
 
-# Dev-mode only: when running from a git checkout, pull the reflexio
-# submodule so tests/benchmarks can use its sources. In install mode the
-# plugin lives under ~/.claude/plugins/cache and reflexio-ai resolves
-# from PyPI instead. The guard checks for both `.git` and `.gitmodules`
-# at REPO_ROOT to distinguish a dev checkout from a marketplace cache
-# (where REPO_ROOT has neither).
-if [ -d "$REPO_ROOT/.git" ] && [ -f "$REPO_ROOT/.gitmodules" ]; then
-  echo "[claude-smart] initializing reflexio submodule..." >&2
-  if ! (cd "$REPO_ROOT" && git submodule update --init --recursive reflexio) >&2; then
-    echo "[claude-smart] WARNING: git submodule update failed; continuing with PyPI reflexio-ai" >&2
-  fi
-fi
-
 if ! command -v uv >/dev/null 2>&1; then
   echo "[claude-smart] uv not found — installing from astral.sh..." >&2
   # The astral.sh bash installer downloads a zip and unzips it. On
@@ -422,6 +435,7 @@ echo "[claude-smart] running uv sync..." >&2
 if ! uv sync --locked --python 3.12 --quiet >&2; then
   write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
 fi
+install_vendored_reflexio
 
 # Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
 # append our two opt-in flags there so `reflexio services start` picks

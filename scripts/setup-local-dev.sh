@@ -3,25 +3,23 @@
 #
 # Does what the published install wrapper does for end users, plus the
 # extra steps that only make sense when you're iterating on this repo:
-#   1. Initialize the reflexio submodule fallback.
-#   2. Uncomment the `[tool.uv.sources]` block in plugin/pyproject.toml so
-#      uv resolves reflexio-ai from a local Reflexio checkout (editable).
-#   3. `git update-index --skip-worktree` plugin/pyproject.toml + uv.lock
-#      so the local divergence is invisible to `git status`.
-#   4. `uv sync` from plugin/.
-#   5. Append CLAUDE_SMART_USE_LOCAL_CLI=1 / _USE_LOCAL_EMBEDDING=1 to
-#      ~/.reflexio/.env so reflexio runs without any external API key.
-#   6. For Claude Code (default): prepare and register the local marketplace
+#   1. Install a side-by-side Reflexio checkout into the plugin venv as editable.
+#   2. `uv sync` from plugin/.
+#   3. Append CLAUDE_SMART_USE_LOCAL_CLI=1 / _USE_LOCAL_EMBEDDING=1 to
+#      ~/.reflexio/.env so Reflexio runs without any external API key.
+#   4. For Claude Code (default): prepare and register the local marketplace
 #      (user scope) so `claude-smart@reflexioai-local` is available everywhere.
-#   7. For Claude Code: disable the published claude-smart plugin at user scope
+#   5. For Claude Code: disable the published claude-smart plugin at user scope
 #      so Desktop/other projects don't load both plugins side by side.
-#   8. For Claude Code: wire this repo's .claude/settings.local.json to enable
+#   6. For Claude Code: wire this repo's .claude/settings.local.json to enable
 #      the local plugin and shadow the remote one for this project.
-#   9. With `--read-only`, write CLAUDE_SMART_READ_ONLY=1 so local hooks
+#   7. With `--read-only`, write CLAUDE_SMART_READ_ONLY=1 so local hooks
 #      buffer but do not publish interactions to Reflexio.
-#   10. For Codex (`--host codex` or `--host both`): run the maintained
+#   8. For Codex (`--host codex` or `--host both`): run the maintained
 #      Node install wrapper so Codex hooks are patched through the JSON-safe
-#      codex-hook.js adapter.
+#      codex-hook.js adapter, then install the same editable Reflexio checkout
+#      into the Codex plugin cache venv used by those hooks.
+#   9. Print a Reflexio source diagnostic so local/PyPI mixups are visible.
 #
 # Idempotent: safe to re-run.
 
@@ -30,8 +28,6 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/plugin"
-PYPROJECT="$PLUGIN_ROOT/pyproject.toml"
-LOCKFILE="$PLUGIN_ROOT/uv.lock"
 
 log() { printf '[setup-local-dev] %s\n' "$*" >&2; }
 
@@ -39,38 +35,69 @@ is_reflexio_checkout() {
   [ -f "$1/pyproject.toml" ] && [ -d "$1/reflexio" ]
 }
 
+expand_user_path() {
+  case "$1" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s/%s\n' "$HOME" "${1#"~/"}"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+resolve_venv_python() {
+  venv_root="$1/.venv"
+  if [ -x "$venv_root/bin/python" ]; then
+    printf '%s\n' "$venv_root/bin/python"
+    return 0
+  fi
+  if [ -x "$venv_root/Scripts/python.exe" ]; then
+    printf '%s\n' "$venv_root/Scripts/python.exe"
+    return 0
+  fi
+  return 1
+}
+
 resolve_reflexio_source() {
   if [ -n "${CLAUDE_SMART_LOCAL_REFLEXIO_PATH:-}" ]; then
-    if is_reflexio_checkout "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH"; then
-      (cd "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH" && pwd)
+    reflexio_env_path="$(expand_user_path "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"
+    if is_reflexio_checkout "$reflexio_env_path"; then
+      (cd "$reflexio_env_path" && pwd)
       return 0
     fi
-    log "ERROR: CLAUDE_SMART_LOCAL_REFLEXIO_PATH is not a Reflexio checkout: $CLAUDE_SMART_LOCAL_REFLEXIO_PATH"
+    log "ERROR: CLAUDE_SMART_LOCAL_REFLEXIO_PATH is not a Reflexio checkout: $reflexio_env_path"
     exit 1
   fi
 
-  # In reflexio-enterprise worktrees, claude-smart and reflexio are sibling
-  # submodules under open_source/. Prefer that current workspace checkout over
-  # claude-smart's nested fallback so local-dev installs do not pin an older
-  # Reflexio client into ~/.reflexio/plugin-root.
+  if [ -n "${REFLEXIO_PATH:-}" ]; then
+    reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"
+    if is_reflexio_checkout "$reflexio_env_path"; then
+      (cd "$reflexio_env_path" && pwd)
+      return 0
+    fi
+    log "ERROR: REFLEXIO_PATH is not a Reflexio checkout: $reflexio_env_path"
+    exit 1
+  fi
+
+  # In the standard development layout, claude-smart and reflexio are sibling
+  # repositories.
   sibling_reflexio="$REPO_ROOT/../reflexio"
   if is_reflexio_checkout "$sibling_reflexio"; then
     (cd "$sibling_reflexio" && pwd)
     return 0
   fi
 
-  bundled_reflexio="$REPO_ROOT/reflexio"
-  if is_reflexio_checkout "$bundled_reflexio"; then
-    (cd "$bundled_reflexio" && pwd)
-    return 0
-  fi
-
-  log "ERROR: could not find a Reflexio checkout at $sibling_reflexio or $bundled_reflexio"
+  log "ERROR: could not find a Reflexio checkout at $sibling_reflexio"
+  log "Set REFLEXIO_PATH=/path/to/reflexio or CLAUDE_SMART_LOCAL_REFLEXIO_PATH=/path/to/reflexio."
   exit 1
 }
 
 verify_reflexio_client() {
-  (cd "$PLUGIN_ROOT" && REFLEXIO_SOURCE_PATH="$REFLEXIO_ABS" uv run --quiet python - <<'PY'
+  (cd "$PLUGIN_ROOT" && REFLEXIO_SOURCE_PATH="$REFLEXIO_ABS" uv run --no-sync --quiet python - <<'PY'
 import inspect
 import os
 import sys
@@ -89,6 +116,110 @@ if "override_learning_stall" not in signature.parameters:
     sys.exit(1)
 PY
   )
+}
+
+codex_plugin_cache_root() {
+  python3 - "$REPO_ROOT/plugin/.codex-plugin/plugin.json" "$HOME/.codex/plugins/cache/reflexioai/claude-smart" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+cache_root = Path(sys.argv[2])
+version = json.loads(manifest.read_text())["version"]
+print(cache_root / version)
+PY
+}
+
+write_local_reflexio_uv_source() {
+  project_root="$1"
+  pyproject="$project_root/pyproject.toml"
+  if [ ! -f "$pyproject" ]; then
+    log "ERROR: expected pyproject.toml at $pyproject"
+    exit 1
+  fi
+  python3 - "$pyproject" "$REFLEXIO_ABS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+reflexio_path = sys.argv[2]
+entry = f"reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}"
+lines = path.read_text().splitlines()
+out: list[str] = []
+in_sources = False
+sources_seen = False
+entry_written = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        if in_sources and not entry_written:
+            out.append(entry)
+            entry_written = True
+        in_sources = stripped == "[tool.uv.sources]"
+        sources_seen = sources_seen or in_sources
+        out.append(line)
+        continue
+    if in_sources and stripped.startswith("reflexio-ai "):
+        continue
+    out.append(line)
+
+if in_sources and not entry_written:
+    out.append(entry)
+    entry_written = True
+
+if not sources_seen:
+    if out and out[-1] != "":
+        out.append("")
+    out.append("[tool.uv.sources]")
+    out.append(entry)
+
+path.write_text("\n".join(out) + "\n")
+PY
+}
+
+install_editable_reflexio_into_codex_cache() {
+  cache_root="$(codex_plugin_cache_root)"
+  if [ ! -d "$cache_root" ]; then
+    log "ERROR: Codex plugin cache was not created at $cache_root"
+    exit 1
+  fi
+
+  marketplace_plugin_root="$HOME/.claude/plugins/marketplaces/reflexioai/plugin"
+  log "writing local Reflexio source override into Codex marketplace snapshot..."
+  write_local_reflexio_uv_source "$marketplace_plugin_root"
+  write_local_reflexio_uv_source "$cache_root"
+
+  log "installing editable Reflexio into Codex plugin cache..."
+  uv sync --project "$cache_root"
+  if ! cache_python="$(resolve_venv_python "$cache_root")"; then
+    log "ERROR: Codex plugin cache Python was not created by uv sync under $cache_root/.venv"
+    exit 1
+  fi
+  uv pip install --project "$cache_root" --python "$cache_python" -e "$REFLEXIO_ABS"
+  REFLEXIO_SOURCE_PATH="$REFLEXIO_ABS" "$cache_python" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import reflexio
+
+expected_package = Path(os.environ["REFLEXIO_SOURCE_PATH"]).resolve() / "reflexio"
+import_file = Path(reflexio.__file__).resolve()
+try:
+    import_file.relative_to(expected_package)
+except ValueError:
+    print(
+        "[setup-local-dev] ERROR: Codex plugin cache imports Reflexio from "
+        f"{import_file}, expected under {expected_package}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f"[setup-local-dev] Codex cache Reflexio import path: {import_file}")
+PY
 }
 
 refresh_local_dashboard() {
@@ -183,33 +314,15 @@ case "$HOST" in
     ;;
 esac
 
-log "initializing reflexio submodule fallback..."
-(cd "$REPO_ROOT" && git submodule update --init --recursive reflexio)
-
-log "enabling [tool.uv.sources] override in plugin/pyproject.toml..."
-# Use an absolute path for the Reflexio checkout. Relative paths like
-# "../reflexio" get resolved by uv against the literal --project path,
-# which breaks when slash commands pass the ~/.reflexio/plugin-root
-# symlink (uv does not canonicalize) — it would resolve to
-# $HOME/.reflexio/reflexio, which does not exist.
 REFLEXIO_ABS="$(resolve_reflexio_source)"
 log "using Reflexio source at $REFLEXIO_ABS"
-sed -i.bak -E \
-  -e 's|^# \[tool\.uv\.sources\]$|[tool.uv.sources]|' \
-  -e "s|^(# )?reflexio-ai = \\{ path = \"[^\"]*\", editable = true \\}\$|reflexio-ai = { path = \"$REFLEXIO_ABS\", editable = true }|" \
-  "$PYPROJECT"
-rm -f "$PYPROJECT.bak"
-
-# Hide local divergence in pyproject.toml + uv.lock from `git status`. See
-# DEVELOPER.md ("Developing locally") for the rationale.
-git -C "$REPO_ROOT" update-index --skip-worktree plugin/pyproject.toml plugin/uv.lock
 
 if ! command -v uv >/dev/null 2>&1; then
   log "ERROR: uv not found — install it from https://docs.astral.sh/uv/ first."
   exit 1
 fi
-log "running uv sync in plugin/ ..."
-(cd "$PLUGIN_ROOT" && uv sync --quiet)
+log "installing editable Reflexio into plugin environment..."
+REFLEXIO_PATH="$REFLEXIO_ABS" bash "$REPO_ROOT/scripts/use-local-reflexio.sh"
 verify_reflexio_client
 
 REFLEXIO_ENV="$HOME/.reflexio/.env"
@@ -220,7 +333,7 @@ if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
   log "appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV"
 fi
 if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-  printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
+  printf '# Use Reflexio local embedding support — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
   log "appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV"
 fi
 python3 - "$REFLEXIO_ENV" "$READ_ONLY" <<'PY'
@@ -420,6 +533,7 @@ if [ "$SETUP_CODEX" = "1" ]; then
   log "installing local claude-smart plugin for Codex..."
   rm -f "$HOME/plugins/claude-smart"
   (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
+  install_editable_reflexio_into_codex_cache
 fi
 
 if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
@@ -437,7 +551,8 @@ elif [ "$SETUP_CODEX" = "1" ]; then
 else
   log "done. Restart Claude Code to pick up the local plugin."
 fi
-log "  pyproject.toml → editable reflexio-ai from $REFLEXIO_ABS"
+log "  plugin venv → editable reflexio-ai from $REFLEXIO_ABS"
+log "  verify source → make doctor-reflexio"
 log "  ~/.reflexio/.env → local-CLI + local-embedding providers"
 if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
   log "  Claude Code user marketplaces → reflexioai-local ($LOCAL_MKT_DIR)"
@@ -445,5 +560,6 @@ if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
 fi
 if [ "$SETUP_CODEX" = "1" ]; then
   log "  Codex marketplace/cache/config → claude-smart@reflexioai"
+  log "  Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS"
   log "  Codex hooks → patched through scripts/codex-hook.js"
 fi
