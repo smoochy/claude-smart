@@ -107,7 +107,7 @@ publish-npm: check-vendor-reflexio ## Publish the current version to npm
 publish-pypi: check-pypi-compatible-reflexio unskip-worktree ensure-remote-reflexio ## Build and publish the current version to PyPI
 	@echo "→ uv build + uv publish"
 	rm -rf plugin/dist/
-	uv build --project plugin
+	uv build --project plugin --out-dir plugin/dist
 	uv publish --project plugin plugin/dist/*
 
 publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio ## Show what would be published without uploading
