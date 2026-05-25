@@ -114,5 +114,38 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
 fi
 
+ensure_hook_package_importable() {
+  if claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
+    return 0
+  fi
+
+  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
+    return 1
+  fi
+  if [ ! -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+    return 1
+  fi
+
+  mkdir -p "$STATE_DIR"
+  if [ "$EVENT" = "session-start" ]; then
+    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
+  else
+    {
+      printf '%s\n' "[claude-smart] hook: claude_smart.hook is not importable; retrying install in background"
+      date 2>/dev/null || true
+    } >>"$STATE_DIR/install.log" 2>&1
+    claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+      bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+      >>"$STATE_DIR/install.log" 2>&1 || true
+  fi
+
+  claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook
+}
+
+if ! ensure_hook_package_importable; then
+  claude_smart_emit_continue
+  exit 0
+fi
+
 # Stdin is the hook payload JSON — stream it through to the Python CLI.
 exec uv run --project "$PLUGIN_ROOT" --no-sync --quiet python -m claude_smart.hook "$HOST" "$EVENT"

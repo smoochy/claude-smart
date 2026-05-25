@@ -243,6 +243,49 @@ force_plugin_root_to_checkout() {
   fi
 }
 
+mirror_local_code_into_plugin_caches() {
+  # Some host hooks invoke Python/scripts from the versioned plugin cache
+  # directly (Claude Code passes $CLAUDE_PLUGIN_ROOT = cache path; the long-
+  # lived backend service was launched from a cache .venv). The plugin-root
+  # symlink fixes slash commands but does not redirect those cache reads.
+  # Retarget every code-bearing subdirectory of each existing host cache to
+  # a symlink into this checkout so all hosts execute live source. The cache
+  # .venv, pyproject.toml, and host manifests stay untouched so marketplace
+  # uninstall remains coherent.
+  for cache_parent in \
+      "$HOME/.claude/plugins/cache/reflexioai/claude-smart" \
+      "$HOME/.codex/plugins/cache/reflexioai/claude-smart"; do
+    [ -d "$cache_parent" ] || continue
+    for cache in "$cache_parent"/*/; do
+      [ -d "$cache" ] || continue
+      cache="${cache%/}"
+      log "mirroring local code into $cache"
+      for sub in src scripts hooks commands skills dashboard bin; do
+        target="$PLUGIN_ROOT/$sub"
+        [ -e "$target" ] || continue
+        link="$cache/$sub"
+        if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+          continue
+        fi
+        rm -rf "$link"
+        ln -s "$target" "$link"
+      done
+    done
+  done
+}
+
+restart_local_backend() {
+  backend_script="$PLUGIN_ROOT/scripts/backend-service.sh"
+  if [ ! -x "$backend_script" ]; then
+    return 0
+  fi
+  log "restarting local backend so it picks up mirrored source..."
+  # Marker-gated like dashboard-service.sh: only kills a backend process
+  # that identifies as claude-smart, so a foreign service is left alone.
+  bash "$backend_script" stop >/dev/null 2>&1 || true
+  bash "$backend_script" start >/dev/null 2>&1 || true
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both] [--read-only]
@@ -539,6 +582,8 @@ fi
 log "pointing ~/.reflexio/plugin-root at editable checkout..."
 force_plugin_root_to_checkout
 
+mirror_local_code_into_plugin_caches
+restart_local_backend
 refresh_local_dashboard
 
 log ""

@@ -196,6 +196,30 @@ claude_smart_resolve_python() {
   return 1
 }
 
+claude_smart_plugin_python() {
+  local plugin_root
+  plugin_root="$1"
+  if claude_smart_is_windows; then
+    printf '%s\n' "$plugin_root/.venv/Scripts/python.exe"
+  else
+    printf '%s\n' "$plugin_root/.venv/bin/python"
+  fi
+}
+
+claude_smart_python_imports() {
+  local plugin_root module python_bin
+  plugin_root="$1"
+  module="$2"
+  python_bin="$(claude_smart_plugin_python "$plugin_root")"
+  [ -x "$python_bin" ] || return 1
+  "$python_bin" - "$module" <<'PY' >/dev/null 2>&1
+import importlib
+import sys
+
+importlib.import_module(sys.argv[1])
+PY
+}
+
 claude_smart_download() {
   local url dest src _CS_PY
   url="$1"

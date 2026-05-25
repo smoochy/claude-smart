@@ -249,6 +249,12 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
     assert 'env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in service
 
 
+def test_backend_service_pins_reflexio_home_to_user_home() -> None:
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"' in service
+
+
 def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
     None
 ):
@@ -1312,6 +1318,65 @@ def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
     assert 'bash "$HERE/backend-service.sh" start' in script
     assert 'bash "$HERE/dashboard-service.sh" start' in script
+
+
+def test_install_complete_requires_importable_hook_package() -> None:
+    script = SMART_INSTALL.read_text()
+
+    assert (
+        'claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1'
+        in script
+    )
+    assert (
+        'if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then'
+        in script
+    )
+
+
+def test_hook_entry_skips_cleanly_when_cached_package_missing(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    venv_bin = plugin_root / ".venv" / "bin"
+    bin_dir = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    bin_dir.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    (scripts / "smart-install.sh").write_text(
+        "#!/bin/sh\n"
+        "printf 'installer should not run while bootstrapping\\n' >> \"$HOME/install.log\"\n"
+    )
+    (venv_bin / "python").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "uv").write_text(
+        "#!/bin/sh\n"
+        "printf 'uv should not execute broken hook package\\n' >&2\n"
+        "exit 17\n"
+    )
+    for executable in [
+        scripts / "hook_entry.sh",
+        scripts / "smart-install.sh",
+        venv_bin / "python",
+        bin_dir / "uv",
+    ]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["CLAUDE_SMART_BOOTSTRAPPING"] = "1"
+    result = subprocess.run(
+        [str(scripts / "hook_entry.sh"), "claude-code", "stop"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert not (tmp_path / "install.log").exists()
+    assert "uv should not execute" not in result.stderr
 
 
 def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> None:

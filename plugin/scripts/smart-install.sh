@@ -105,6 +105,7 @@ install_complete() {
   [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
+  claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
   fi
@@ -435,7 +436,18 @@ echo "[claude-smart] running uv sync..." >&2
 if ! uv sync --locked --python 3.12 --quiet >&2; then
   write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
 fi
+# Defend against a stale lockfile silently dropping the project install.
+# When plugin/uv.lock pins a different claude-smart version than pyproject.toml,
+# `uv sync --locked` exits 0 but does NOT install the claude_smart package, so
+# every hook fails later with `ModuleNotFoundError: No module named 'claude_smart'`.
+# Catch that here with a clear, user-visible install-failed marker.
+if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
+  write_failure "uv sync left claude_smart uninstalled in $PLUGIN_ROOT/.venv — plugin/uv.lock is likely out of sync with pyproject.toml (regenerate with 'uv lock --project plugin' and reinstall the plugin)"
+fi
 install_vendored_reflexio
+if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
+  write_failure "claude-smart package is not importable after vendored Reflexio install in $PLUGIN_ROOT/.venv"
+fi
 
 # Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
 # append our two opt-in flags there so `reflexio services start` picks

@@ -220,6 +220,21 @@ case "$CMD" in
     export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
     export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
 
+    # Keep plugin runtime data in ~/.reflexio even when the backend imports
+    # Reflexio from an editable checkout inside a larger repo with its own
+    # .env. python-dotenv respects pre-existing env vars, so this prevents a
+    # parent REFLEXIO_LOG_DIR from sending claude-smart to enterprise configs.
+    export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"
+
+    # Force sqlite: the plugin venv ships only the open-source reflexio
+    # package, which doesn't register the Supabase/Postgres storage
+    # factories. If the user's ~/.reflexio/.env sets REFLEXIO_STORAGE to
+    # something else (common when sharing the file with reflexio_ext),
+    # the backend boots but crashes every request. load_dotenv() inside
+    # the CLI respects pre-existing env vars, so exporting here wins
+    # without touching the file on disk.
+    export REFLEXIO_STORAGE="sqlite"
+
     # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
     # capture so process output cannot grow backend.log past its cap.
     #

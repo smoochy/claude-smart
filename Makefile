@@ -17,7 +17,7 @@
 .PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         check-vendor-reflexio check-pypi-compatible-reflexio ensure-remote-reflexio \
-        doctor-reflexio unskip-worktree
+        check-locked-project-version doctor-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -78,6 +78,17 @@ unskip-worktree: ## Clear skip-worktree on plugin/pyproject.toml and plugin/uv.l
 	@echo "→ clearing skip-worktree on $(PYPROJECT) $(LOCK_FILES)"
 	@git update-index --no-skip-worktree $(PYPROJECT) $(LOCK_FILES) 2>/dev/null || true
 
+check-locked-project-version: ## Verify plugin/uv.lock claude-smart version matches plugin/pyproject.toml
+	@manifest=$$(awk -F'"' '/^version =/{print $$2; exit}' $(PYPROJECT)); \
+	  locked=$$(awk '/^name = "claude-smart"$$/{f=1; next} f && /^version =/{gsub(/"/, "", $$3); print $$3; exit}' plugin/uv.lock); \
+	  if [ -z "$$manifest" ] || [ -z "$$locked" ]; then \
+	    echo "error: could not parse versions (manifest='$$manifest' locked='$$locked')" >&2; exit 1; \
+	  fi; \
+	  if [ "$$manifest" != "$$locked" ]; then \
+	    echo "error: plugin/uv.lock claude-smart version ($$locked) does not match $(PYPROJECT) ($$manifest); the bump step should have synced both" >&2; exit 1; \
+	  fi; \
+	  echo "→ ok: plugin/uv.lock claude-smart matches $(PYPROJECT) ($$manifest)"
+
 ensure-remote-reflexio: ## Ensure published wheels resolve reflexio-ai from PyPI, not a local path
 	@echo "→ ensuring $(PYPROJECT) resolves reflexio-ai from PyPI"
 	@if grep -qE '^\[tool\.uv\.sources\]|reflexio-ai = \{ path =|file://' $(PYPROJECT); then \
@@ -97,10 +108,22 @@ bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in
 	       .claude-plugin/marketplace.json.bak README.md.bak
 	@echo "→ refreshing uv lockfile (resolves reflexio-ai from PyPI)"
 	@uv lock --refresh-package reflexio-ai --project plugin
+	@# Force-sync the workspace project's own version in plugin/uv.lock.
+	@# uv does NOT re-lock the editable project's version on a plain `uv lock`
+	@# (and silently no-ops --refresh-package <project>), and when this tree is
+	@# absorbed into a parent uv workspace, `uv lock --project plugin` writes to
+	@# the parent's lockfile rather than plugin/uv.lock at all. Either path
+	@# leaves plugin/uv.lock pinned to the old version, which makes
+	@# `uv sync --locked` silently drop the project from the install set on
+	@# end-user machines (see v0.2.38 incident).
+	@awk -v new='$(VERSION)' '\
+	  /^name = "claude-smart"$$/{f=1; print; next} \
+	  f && /^version = /{sub(/"[^"]+"/, "\"" new "\""); f=0} \
+	  {print}' plugin/uv.lock > plugin/uv.lock.tmp && mv plugin/uv.lock.tmp plugin/uv.lock
 	@echo "→ resulting versions:"
 	@grep -HE '("version"|^version)' $(VERSION_FILES)
 
-publish-npm: check-vendor-reflexio ## Publish the current version to npm
+publish-npm: check-vendor-reflexio check-locked-project-version ## Publish the current version to npm
 	@echo "→ npm publish"
 	npm publish --access public
 
@@ -110,7 +133,7 @@ publish-pypi: check-pypi-compatible-reflexio unskip-worktree ensure-remote-refle
 	uv build --project plugin --out-dir plugin/dist
 	uv publish --project plugin plugin/dist/*
 
-publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio ## Show what would be published without uploading
+publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm publish --dry-run
 	@echo ""
@@ -121,7 +144,7 @@ publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio ## Sho
 
 publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
 
-release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-pypi-compatible-reflexio bump ## Bump + commit + tag + publish + push
+release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-pypi-compatible-reflexio bump check-locked-project-version ## Bump + commit + tag + publish + push
 	@echo "→ committing release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"
@@ -131,7 +154,7 @@ release: check-version check-clean check-npm-auth check-reflexio-lock check-refl
 	git push --follow-tags
 	@echo "✓ released v$(VERSION)"
 
-release-npm: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump ## Bump + commit + tag + publish npm only
+release-npm: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump check-locked-project-version ## Bump + commit + tag + publish npm only
 	@echo "→ committing npm release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"
