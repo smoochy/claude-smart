@@ -138,13 +138,14 @@ port_occupied() {
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
-# Reap any reflexio/uvicorn listener still holding $PORT after the PID
-# file kill. Filters by cmdline so we don't knock over an unrelated
-# service a user has bound to 8071 — symmetric with start's refusal to
-# stomp on a foreign listener. Silent on failure.
+# Reap any reflexio/uvicorn listener still holding the given port after
+# the PID file kill. Filters by cmdline so we don't knock over an
+# unrelated service a user has bound there — symmetric with start's
+# refusal to stomp on a foreign listener. Silent on failure.
 reap_port_listeners() {
+  port="${1:-$PORT}"
   command -v lsof >/dev/null 2>&1 || return 0
-  candidates=$(lsof -ti:"$PORT" 2>/dev/null) || candidates=""
+  candidates=$(lsof -ti:"$port" 2>/dev/null) || candidates=""
   [ -z "$candidates" ] && return 0
   ours=""
   for pid in $candidates; do
@@ -166,16 +167,31 @@ reap_port_listeners() {
   kill -KILL $remaining 2>/dev/null || true
 }
 
-# Full shutdown: kill the recorded process group (if any) then sweep the
-# port for surviving reflexio listeners. Used by both `stop` and the
-# opt-in `session-end` path so a stale/missing PID file doesn't produce
-# a silent no-op.
+# Describe what (if anything) is currently listening on $1. Returns
+# "<command> (pid <pid>)" or empty if the port is free or lsof is
+# unavailable. Used to make port-conflict log lines diagnosable.
+port_holder() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -i:"$1" -sTCP:LISTEN -P -n 2>/dev/null \
+    | awk 'NR==2 {print $1" (pid "$2")"; exit}'
+}
+
+# Full shutdown: kill the recorded process group (if any) then sweep
+# both the backend port and the embedding-service port for surviving
+# reflexio listeners. Used by both `stop` and the opt-in `session-end`
+# path so a stale/missing PID file doesn't produce a silent no-op, and
+# so a stale embedding service on EMBEDDING_PORT doesn't block the next
+# fresh boot (e.g. when codex-hook.js falls back to 8072 for the main
+# backend because 8071 is held by another app).
 full_stop() {
   if [ -f "$PID_FILE" ]; then
     kill_group "$(cat "$PID_FILE" 2>/dev/null)"
     rm -f "$PID_FILE"
   fi
-  reap_port_listeners
+  reap_port_listeners "$PORT"
+  if [ -n "${EMBEDDING_PORT:-}" ] && [ "$EMBEDDING_PORT" != "$PORT" ]; then
+    reap_port_listeners "$EMBEDDING_PORT"
+  fi
 }
 
 case "$CMD" in
@@ -195,8 +211,14 @@ case "$CMD" in
     if is_our_backend_running; then emit_ok; exit 0; fi
     if port_occupied; then
       # Something answered the TCP probe but /health didn't — don't
-      # start a second uvicorn on top of it.
-      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: port $PORT held by another process; skipping"
+      # start a second uvicorn on top of it. Surface the holder so the
+      # user knows which process to quit (common case: editor/dev tool
+      # squatting 8071) instead of silently failing.
+      holder="$(port_holder "$PORT" 2>/dev/null || true)"
+      msg="[claude-smart] backend: port $PORT held by another process${holder:+ ($holder)}; skipping start"
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "$msg"
+      echo "$msg" >&2
+      echo "Free port $PORT (or stop the process above) and run /claude-smart:restart again." >&2
       emit_ok; exit 0
     fi
     if ! command -v uv >/dev/null 2>&1; then

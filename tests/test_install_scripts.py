@@ -1206,6 +1206,33 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
     assert "REFLEXIO_EMBEDDING_SERVICE_URL" in backend
 
 
+def test_backend_service_full_stop_reaps_embedding_port() -> None:
+    """full_stop must sweep both the backend port and the embedding port.
+
+    Without this, a stale embedding service (uvicorn
+    reflexio.server.llm.embedding_service) can survive ``/claude-smart:restart``
+    and block subsequent boots when something else is squatting 8071.
+    """
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'reap_port_listeners "$PORT"' in backend
+    assert 'reap_port_listeners "$EMBEDDING_PORT"' in backend
+
+
+def test_backend_service_surfaces_port_holder_on_skip() -> None:
+    """When start skips because the port is held, the holder must be reported.
+
+    Silently skipping makes ``/claude-smart:restart`` look successful even
+    though the backend never came up — users need to see which process is
+    squatting the port so they can free it.
+    """
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert "port_holder()" in backend
+    assert 'holder="$(port_holder "$PORT"' in backend
+    assert "Free port $PORT" in backend
+
+
 def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 
