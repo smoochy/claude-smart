@@ -45,7 +45,7 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
     echo "claude-smart: 'uv' not found — bootstrapping dependencies (~1-3 min on first install)..." >&2
-    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
+    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >/dev/null
     claude_smart_prepend_astral_bins
     claude_smart_prepend_node_bins
   fi
@@ -58,6 +58,33 @@ if ! command -v uv >/dev/null 2>&1; then
     else
       echo "claude-smart: 'uv' not found on PATH after bootstrap attempt." >&2
       echo "Install it from https://docs.astral.sh/uv/ or rerun $PLUGIN_ROOT/scripts/smart-install.sh manually." >&2
+    fi
+    exit 1
+  fi
+fi
+
+# Slash commands run synchronously and surface stderr directly to the user,
+# so a bare `python -m claude_smart.cli` ModuleNotFoundError leaks to the
+# transcript when the install is mid-bootstrap (e.g. SessionStart's
+# background smart-install.sh hasn't finished yet). Mirror hook_entry.sh's
+# ensure_hook_package_importable check: run smart-install.sh inline once,
+# then re-check, then surface either the install-failed marker reason or a
+# clear "still bootstrapping" message instead of letting Python crash.
+if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
+  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] \
+     && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+    echo "claude-smart: finishing install (~1-3 min on first install)..." >&2
+    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >/dev/null || true
+  fi
+  if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
+    if [ -f "$FAILURE_MARKER" ]; then
+      msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
+      [ -n "$msg" ] || msg="unknown error"
+      echo "claude-smart is not installed correctly: $msg" >&2
+      echo "Re-run the plugin's Setup (restart Claude Code) or fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
+    else
+      echo "claude-smart: claude_smart package is not importable in $PLUGIN_ROOT/.venv." >&2
+      echo "Run $PLUGIN_ROOT/scripts/smart-install.sh manually to diagnose." >&2
     fi
     exit 1
   fi

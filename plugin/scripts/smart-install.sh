@@ -446,6 +446,22 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 cd "$PLUGIN_ROOT"
+# Self-heal a corrupt .venv before uv sync. uv refuses to reuse a venv that
+# exists but has no python executable (e.g. partial cleanup of an npm/npx
+# tree, an interrupted earlier install, or the underlying interpreter being
+# uninstalled) — it errors with "not a valid Python environment" instead of
+# rebuilding. Pre-clearing lets uv recreate it cleanly.
+if [ -d "$PLUGIN_ROOT/.venv" ]; then
+  if claude_smart_is_windows; then
+    plugin_python_path="$PLUGIN_ROOT/.venv/Scripts/python.exe"
+  else
+    plugin_python_path="$PLUGIN_ROOT/.venv/bin/python"
+  fi
+  if [ ! -x "$plugin_python_path" ]; then
+    echo "[claude-smart] .venv at $PLUGIN_ROOT/.venv has no python executable; recreating" >&2
+    rm -rf "$PLUGIN_ROOT/.venv"
+  fi
+fi
 echo "[claude-smart] running uv sync..." >&2
 if ! uv sync --locked --python 3.12 --quiet >&2; then
   write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"

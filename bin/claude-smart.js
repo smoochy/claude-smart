@@ -357,7 +357,7 @@ function findClaudeCodePluginRoot() {
       }
     }
   } catch {
-    // Fall through to marketplace/package fallbacks.
+    // Fall through to marketplace fallback.
   }
   candidates.sort((a, b) => {
     const versionCompare = compareSemverLikePathNames(b, a);
@@ -368,9 +368,13 @@ function findClaudeCodePluginRoot() {
       return 0;
     }
   });
+  // PACKAGE_ROOT/plugin is intentionally NOT a fallback: under `npx` it
+  // points at /root/.npm/_npx/<hash>/.../plugin which npm may prune between
+  // invocations, breaking the editable claude_smart install (.pth dangles,
+  // venv survives) and confusing every later `uv sync`. Require `claude
+  // plugin install` to have populated the cache dir instead, and fail loud.
   const fallbacks = [
     join(homedir(), ".claude", "plugins", "marketplaces", CODEX_MARKETPLACE_NAME, "plugin"),
-    join(PACKAGE_ROOT, "plugin"),
   ];
   for (const candidate of [...candidates, ...fallbacks]) {
     if (
@@ -428,7 +432,19 @@ function forcePluginRoot(pluginRoot) {
 async function bootstrapClaudeCodeInstall() {
   const pluginRoot = findClaudeCodePluginRoot();
   if (!pluginRoot) {
-    throw new Error("could not locate installed Claude Code plugin root after install");
+    const cacheRoot = join(
+      homedir(),
+      ".claude",
+      "plugins",
+      "cache",
+      CODEX_MARKETPLACE_NAME,
+      "claude-smart",
+    );
+    throw new Error(
+      `claude plugin install did not populate ${cacheRoot}. ` +
+        "Open Claude Code, run /plugins, verify claude-smart is installed " +
+        "from the ReflexioAI marketplace, then rerun `npx claude-smart install`.",
+    );
   }
   forcePluginRoot(pluginRoot);
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
@@ -978,7 +994,8 @@ function printHelp() {
       "  7. Restart Codex.",
       "",
       "Update:",
-      "  npx claude-smart update                        Update to the latest version",
+      "  npx claude-smart update                        Reinstall Claude Code support from this package",
+      "  npx claude-smart update --host codex           Reinstall Codex support from this package",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "",
       "Uninstall:",
@@ -1383,33 +1400,53 @@ function installCodexPluginCache(pluginRoot) {
   return cacheDir;
 }
 
-async function runUpdate(args) {
-  const setup = configureReflexioSetup();
-  if (!hasClaudeCli()) {
-    process.stderr.write(
-      "error: 'claude' CLI not found on PATH. " +
-        "Install Claude Code first: https://claude.com/claude-code\n",
-    );
-    process.exit(1);
+function findCodexPluginRoot() {
+  const candidates = [];
+  try {
+    for (const entry of readdirSync(CODEX_PLUGIN_CACHE_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = join(CODEX_PLUGIN_CACHE_DIR, entry.name);
+      if (
+        existsSync(join(candidate, "pyproject.toml")) &&
+        existsSync(join(candidate, "scripts", "smart-install.sh"))
+      ) {
+        candidates.push(candidate);
+      }
+    }
+  } catch {
+    // No Codex cache yet.
   }
-
-  const code = await runClaude(["plugin", "update", PLUGIN_SPEC], {
-    spinnerLabel: "Checking for claude-smart updates…",
+  candidates.sort((a, b) => {
+    const versionCompare = compareSemverLikePathNames(b, a);
+    if (versionCompare !== 0) return versionCompare;
+    try {
+      return statSync(b).mtimeMs - statSync(a).mtimeMs;
+    } catch {
+      return 0;
+    }
   });
-  if (code !== 0) {
-    process.stderr.write(`error: \`claude plugin update ${PLUGIN_SPEC}\` failed (exit ${code})\n`);
-    process.exit(code);
+  return candidates[0] || null;
+}
+
+async function runUpdate(args) {
+  if (parseHost(args) === "codex") {
+    await runUpdateCodex(args);
+    return;
   }
 
-  process.stdout.write("\nclaude-smart updated. Restart Claude Code to apply.\n");
   const pluginRoot = findClaudeCodePluginRoot();
   if (pluginRoot) {
-    restorePublishHooksFromSource(pluginRoot);
-    if (setup.readOnly) {
-      prunePublishHooksForReadOnly(pluginRoot);
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-    }
+    stopClaudeSmartServices(pluginRoot);
   }
+  process.stdout.write("Updating claude-smart by reinstalling from this package...\n");
+  await runInstall(args, { retryInstallAfterUninstall: true });
+}
+
+async function runUpdateCodex(args) {
+  const pluginRoot = findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
+  stopClaudeSmartServices(pluginRoot);
+  process.stdout.write("Updating claude-smart Codex support by reinstalling from this package...\n");
+  await runInstallCodex(args);
 }
 
 async function runUninstall(args) {
@@ -1462,7 +1499,7 @@ async function runSetup(args) {
   if (code !== 0) process.exit(code);
 }
 
-async function runInstall(args) {
+async function runInstall(args, options = {}) {
   if (parseHost(args) === "codex") {
     await runInstallCodex(args);
     return;
@@ -1486,7 +1523,21 @@ async function runInstall(args) {
   ];
 
   for (const step of steps) {
-    const code = await runClaude(step.args, { spinnerLabel: step.label });
+    let code = await runClaude(step.args, { spinnerLabel: step.label });
+    if (
+      code !== 0 &&
+      options.retryInstallAfterUninstall &&
+      step.args[0] === "plugin" &&
+      step.args[1] === "install"
+    ) {
+      process.stderr.write(
+        `warning: \`claude ${step.args.join(" ")}\` failed (exit ${code}); retrying after uninstalling ${PLUGIN_SPEC}.\n`,
+      );
+      await runClaude(["plugin", "uninstall", PLUGIN_SPEC], {
+        spinnerLabel: "Removing existing claude-smart install…",
+      });
+      code = await runClaude(step.args, { spinnerLabel: step.label });
+    }
     if (code !== 0) {
       process.stderr.write(
         `error: \`claude ${step.args.join(" ")}\` failed (exit ${code})\n`,

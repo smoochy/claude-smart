@@ -25,6 +25,7 @@ VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
 RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
+CLI_SH = REPO_ROOT / "plugin" / "scripts" / "cli.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
@@ -51,6 +52,74 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
     return env
+
+
+def _claude_plugin_cache_version_dir(tmp_path: Path) -> Path:
+    """Return the cache dir that real `claude plugin install` would populate.
+
+    bin/claude-smart.js no longer falls back to PACKAGE_ROOT/plugin when this
+    dir is missing (npx scratch is too fragile), so installer tests that drive
+    a fake `claude` binary must seed the cache with a real pyproject.toml +
+    scripts/smart-install.sh so findClaudeCodePluginRoot can locate it.
+    """
+    pyproject = (REPO_ROOT / "plugin" / "pyproject.toml").read_text()
+    version_line = next(
+        (
+            line
+            for line in pyproject.splitlines()
+            if line.strip().startswith("version =")
+        ),
+        "",
+    )
+    version = version_line.split("=", 1)[1].strip().strip('"') or "0.0.0"
+    return (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / version
+    )
+
+
+def _seed_fake_claude_cache(tmp_path: Path) -> Path:
+    """Pre-populate the cache dir that fake `claude plugin install` won't create.
+
+    Copies the real plugin tree (sans node_modules / .venv / caches) so the
+    installer can run smart-install.sh against it. Returns the seeded path.
+    """
+    cache_dir = _claude_plugin_cache_version_dir(tmp_path)
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    src = REPO_ROOT / "plugin"
+
+    def ignore(_: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if name
+            in {
+                "__pycache__",
+                ".venv",
+                ".pytest_cache",
+                ".ruff_cache",
+                "node_modules",
+                ".next",
+            }
+        }
+
+    shutil.copytree(src, cache_dir, ignore=ignore, dirs_exist_ok=False)
+    return cache_dir
+
+
+def _fake_claude_install_script() -> str:
+    """Default fake `claude` body that logs every call and exits 0.
+
+    Used by tests that don't care about install-retry semantics. The cache is
+    seeded separately via _seed_fake_claude_cache, so this script just needs
+    to not error.
+    """
+    return '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
 
 
 def _node_platform() -> str:
@@ -668,7 +737,6 @@ def test_node_install_reads_managed_env_and_bootstraps_latest_cache(
         '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
     )
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
-
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env_path = tmp_path / ".reflexio" / ".env"
@@ -780,11 +848,15 @@ def test_node_update_reads_managed_env(tmp_path: Path) -> None:
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    _seed_fake_claude_cache(tmp_path)
     claude = fake_bin / "claude"
-    claude.write_text(
-        '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
-    )
+    claude.write_text(_fake_claude_install_script())
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        '#!/bin/sh\nprintf \'bash %s\\n\' "$*" >> "$HOME/bash.log"\nexit 0\n'
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
 
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -803,12 +875,69 @@ def test_node_update_reads_managed_env(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "claude-smart updated" in result.stdout
+    assert "Updating claude-smart by reinstalling from this package" in result.stdout
+    assert "claude-smart installed and dependencies are prepared" in result.stdout
     assert "Using managed Reflexio" in result.stdout
+    claude_log = (tmp_path / "claude.log").read_text()
+    assert "claude plugin marketplace add" in claude_log
+    assert "claude plugin install claude-smart@reflexioai" in claude_log
+    assert "claude plugin update" not in claude_log
     env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
     assert "REFLEXIO_USER_ID=" not in env_text
+
+
+def test_node_update_retries_install_after_uninstall(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _seed_fake_claude_cache(tmp_path)
+    claude = fake_bin / "claude"
+    claude.write_text(
+        "#!/bin/sh\n"
+        'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
+        'if [ "$1 $2 $3" = "plugin install claude-smart@reflexioai" ]; then\n'
+        '  count_file="$HOME/install-count"\n'
+        "  count=0\n"
+        '  [ -f "$count_file" ] && count=$(cat "$count_file")\n'
+        "  count=$((count + 1))\n"
+        '  printf \'%s\\n\' "$count" > "$count_file"\n'
+        '  [ "$count" -eq 1 ] && exit 17\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        '#!/bin/sh\nprintf \'bash %s\\n\' "$*" >> "$HOME/bash.log"\nexit 0\n'
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "update"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "retrying after uninstalling claude-smart@reflexioai" in result.stderr
+    assert (tmp_path / "install-count").read_text().strip() == "2"
+    claude_log = (tmp_path / "claude.log").read_text().splitlines()
+    assert claude_log == [
+        f"claude plugin marketplace add {REPO_ROOT}",
+        "claude plugin install claude-smart@reflexioai",
+        "claude plugin uninstall claude-smart@reflexioai",
+        "claude plugin install claude-smart@reflexioai",
+    ]
 
 
 def test_dashboard_service_loads_reflexio_env_for_managed_proxy() -> None:
@@ -874,6 +1003,110 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
     assert "Started claude-smart backend service." in node_installer
     assert "Refreshed claude-smart dashboard service." in node_installer
+
+
+def test_node_update_reinstalls_by_host() -> None:
+    node_installer = NODE_INSTALLER.read_text()
+
+    assert 'if (parseHost(args) === "codex")' in node_installer
+    assert "await runUpdateCodex(args)" in node_installer
+    assert "async function runUpdateCodex(args)" in node_installer
+    assert 'findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin")' in node_installer
+    assert (
+        "await runInstall(args, { retryInstallAfterUninstall: true })" in node_installer
+    )
+    assert "await runInstallCodex(args)" in node_installer
+    assert 'runClaude(["plugin", "update", PLUGIN_SPEC]' not in node_installer
+    assert "update --host codex" in node_installer
+
+
+def test_find_claude_code_plugin_root_does_not_fall_back_to_npx_tree() -> None:
+    """Regression: findClaudeCodePluginRoot used to fall back to
+    `PACKAGE_ROOT/plugin` (the npm/npx scratch tree). When npm pruned that
+    tree between invocations, ~/.reflexio/plugin-root pointed at a path
+    whose .venv had no python and whose claude_smart editable .pth dangled.
+    Make sure we never re-introduce that fallback."""
+    node_installer = NODE_INSTALLER.read_text()
+
+    assert "function findClaudeCodePluginRoot()" in node_installer
+    fn_start = node_installer.index("function findClaudeCodePluginRoot()")
+    # The next top-level `function ` after this one bounds the body.
+    fn_end = node_installer.index("\nfunction ", fn_start + 1)
+    body = node_installer[fn_start:fn_end]
+    assert 'join(PACKAGE_ROOT, "plugin")' not in body, (
+        "findClaudeCodePluginRoot must not fall back to PACKAGE_ROOT/plugin; "
+        "the npx tree is ephemeral and breaks editable claude_smart installs."
+    )
+    assert "claude plugin install did not populate" in node_installer, (
+        "bootstrapClaudeCodeInstall must surface a clear error when the cache is empty"
+    )
+
+
+def test_smart_install_recreates_corrupt_venv() -> None:
+    """Regression: when an earlier install left .venv without a python
+    binary (interrupted run, npm pruning, etc.), `uv sync` errored with
+    "not a valid Python environment" and never self-healed. smart-install.sh
+    must detect this and clear the .venv so uv can rebuild it."""
+    smart_install = SMART_INSTALL.read_text()
+
+    assert "has no python executable; recreating" in smart_install
+    assert 'rm -rf "$PLUGIN_ROOT/.venv"' in smart_install
+
+
+def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
+    """Regression: cli.sh used to exec `python -m claude_smart.cli` even when
+    the package wasn't importable, leaking a bare ModuleNotFoundError into
+    the slash-command transcript when SessionStart's background install
+    hadn't finished. It must now mirror hook_entry.sh's import probe."""
+    cli_sh = (REPO_ROOT / "plugin" / "scripts" / "cli.sh").read_text()
+
+    assert "claude_smart_python_imports" in cli_sh
+    assert "claude_smart.cli" in cli_sh
+    assert "claude-smart is not installed correctly" in cli_sh
+
+
+def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    venv_bin = plugin_root / ".venv" / "bin"
+    bin_dir = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    bin_dir.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(CLI_SH, scripts / "cli.sh")
+    (scripts / "smart-install.sh").write_text(
+        "#!/bin/sh\n"
+        'printf \'{"continue":true,"suppressOutput":true}\\n\'\n'
+        "printf 'installer diagnostic\\n' >&2\n"
+        'touch "$HOME/import-ok"\n'
+    )
+    (venv_bin / "python").write_text(
+        '#!/bin/sh\n[ -f "$HOME/import-ok" ] && exit 0\nexit 1\n'
+    )
+    (bin_dir / "uv").write_text("#!/bin/sh\nprintf 'cli ran\\n'\nexit 0\n")
+    for executable in [
+        scripts / "cli.sh",
+        scripts / "smart-install.sh",
+        venv_bin / "python",
+        bin_dir / "uv",
+    ]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [str(scripts / "cli.sh"), "show"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "cli ran\n"
+    assert "installer diagnostic" in result.stderr
+    assert '"continue"' not in result.stderr
 
 
 def test_service_start_scripts_guard_internal_invocations() -> None:
@@ -1217,6 +1450,13 @@ def test_backend_service_full_stop_reaps_embedding_port() -> None:
 
     assert 'reap_port_listeners "$PORT"' in backend
     assert 'reap_port_listeners "$EMBEDDING_PORT"' in backend
+    assert "'*reflexio.server.llm.embedding_service:app*'" in backend
+    assert "'*reflexio*embedding_service*'" in backend
+    assert "'*embedding_service*'" not in backend
+    assert (
+        "reap_port_listeners \"$EMBEDDING_PORT\" '*reflexio*' '*uvicorn*'"
+        not in backend
+    )
 
 
 def test_backend_service_surfaces_port_holder_on_skip() -> None:
