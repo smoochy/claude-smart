@@ -1,12 +1,24 @@
-"""PostToolUse hook — record the tool invocation and its outcome."""
+"""PostToolUse hook — record the tool invocation and its outcome.
+
+For Claude Code, this hook only appends ``Assistant_tool`` records to the
+session buffer; the ``Stop`` and ``SessionEnd`` hooks own publishing. Codex
+exec (non-interactive `codex exec --json`) never fires ``Stop`` or any
+session-end-like event, so without an additional flush every codex run
+leaves its turns in the local JSONL buffer and the reflexio backend never
+sees them. To close that gap we opportunistically publish from
+PostToolUse when the host is Codex — see ``_maybe_flush_codex`` below.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Any
 
-from claude_smart import state
+from claude_smart import ids, publish, runtime, state
+
+_LOGGER = logging.getLogger(__name__)
 
 # Tool inputs are persisted locally and later published to reflexio, so we
 # apply a conservative redaction pass at ingestion time. Chosen to avoid
@@ -129,6 +141,66 @@ def _flatten_tool_response_text(tool_response: Any) -> str:
     return ""
 
 
+_CODEX_SYNTHETIC_ASSISTANT_TEXT = (
+    "<codex turn in progress — synthesised anchor for incremental publish>"
+)
+
+
+def _maybe_flush_codex(*, session_id: str, payload: dict[str, Any]) -> None:
+    """Synthesise an Assistant anchor and publish unpublished turns under Codex.
+
+    Codex's non-interactive ``codex exec --json`` mode never fires a Stop or
+    SessionEnd hook (only SessionStart, UserPromptSubmit, and PostToolUse),
+    so without this opportunistic flush the buffered User + Assistant_tool
+    records never reach the reflexio backend. ``state.unpublished_slice``
+    folds tool records into the *next* Assistant turn's ``tools_used``;
+    appending a synthetic Assistant before each publish keeps tools from
+    being silently dropped at publish time.
+
+    The synthetic anchor uses a distinctive marker string so a future audit
+    can grep for it; the first publish carries the User turn + every
+    buffered tool, and later publishes carry only the new tool fired since
+    the previous flush.
+
+    Failures are absorbed (logged at debug) — the hook must never break the
+    Codex session even when reflexio is unreachable.
+
+    Args:
+        session_id (str): Codex thread id from the hook payload.
+        payload (dict[str, Any]): Raw PostToolUse hook payload, used to
+            derive the per-project ``user_id`` from ``cwd``.
+
+    Returns:
+        None
+    """
+    # Use whichever resolver this build of claude_smart exposes — older
+    # 0.2.31 packages (the marketplace baseline) called it
+    # ``resolve_project_id`` while 0.2.39+ renames it to ``resolve_user_id``.
+    # ``getattr`` keeps the fix portable across both shapes so the same
+    # source file can be copied into either cache slot.
+    resolver = getattr(ids, "resolve_user_id", None) or ids.resolve_project_id
+    project_id = resolver(payload.get("cwd"))
+    state.append(
+        session_id,
+        {
+            "ts": int(time.time()),
+            "role": "Assistant",
+            "content": _CODEX_SYNTHETIC_ASSISTANT_TEXT,
+            "user_id": project_id,
+            "synthesised_by": "codex_post_tool_anchor",
+        },
+    )
+    try:
+        publish.publish_unpublished(
+            session_id=session_id,
+            project_id=project_id,
+            force_extraction=False,
+            skip_aggregation=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — hook must never break the session.
+        _LOGGER.debug("codex post_tool publish failed: %s", exc)
+
+
 def handle(payload: dict[str, Any]) -> None:
     session_id = payload.get("session_id")
     tool_name = payload.get("tool_name") or ""
@@ -146,3 +218,6 @@ def handle(payload: dict[str, Any]) -> None:
         "status": _derive_status(tool_response),
     }
     state.append(session_id, record)
+
+    if runtime.is_codex():
+        _maybe_flush_codex(session_id=session_id, payload=payload)

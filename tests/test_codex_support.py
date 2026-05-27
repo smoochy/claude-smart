@@ -473,6 +473,72 @@ def test_codex_post_tool_records_apply_patch_payload(session_dir) -> None:
     assert record["tool_output"] == "ok"
 
 
+def test_codex_post_tool_publishes_synthetic_assistant_anchor(
+    session_dir, monkeypatch
+) -> None:
+    """Codex's `codex exec` mode never fires Stop or SessionEnd, so PostToolUse
+    must opportunistically synthesise an Assistant anchor and call
+    ``publish.publish_unpublished`` — otherwise buffered ``Assistant_tool``
+    records would be silently dropped at publish time (the
+    ``unpublished_slice`` contract folds tools into the *next* Assistant
+    turn's ``tools_used``). This test pins that behaviour for Codex and
+    asserts no anchor is added for Claude Code.
+    """
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+
+    def fake_publish(**kwargs: Any) -> tuple[str, int]:
+        calls.append(kwargs)
+        return ("ok", 1)
+
+    monkeypatch.setattr(post_tool.publish, "publish_unpublished", fake_publish)
+
+    post_tool.handle(
+        {
+            "session_id": "s2",
+            "tool_name": "shell",
+            "tool_input": {"command": "ls"},
+            "tool_response": {"stdout": "ok"},
+            "cwd": "/tmp/codex-fake-project",
+        }
+    )
+
+    records = state.read_all("s2")
+    roles = [r.get("role") for r in records]
+    assert roles == ["Assistant_tool", "Assistant"]
+    assert records[1]["synthesised_by"] == "codex_post_tool_anchor"
+    assert calls and calls[0]["session_id"] == "s2"
+    assert calls[0]["force_extraction"] is False
+
+
+def test_claude_code_post_tool_does_not_publish(session_dir, monkeypatch) -> None:
+    """Claude Code's PostToolUse path must remain a pure append — the
+    Stop hook owns publishing. Synthesising an Assistant anchor here
+    would corrupt turn boundaries seen by the Stop handler.
+    """
+    runtime.set_host(runtime.HOST_CLAUDE_CODE)
+    calls: list[dict[str, Any]] = []
+
+    def fake_publish(**kwargs: Any) -> tuple[str, int]:
+        calls.append(kwargs)
+        return ("ok", 1)
+
+    monkeypatch.setattr(post_tool.publish, "publish_unpublished", fake_publish)
+
+    post_tool.handle(
+        {
+            "session_id": "s3",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_response": {"stdout": "ok"},
+        }
+    )
+
+    records = state.read_all("s3")
+    assert [r.get("role") for r in records] == ["Assistant_tool"]
+    assert calls == []
+
+
 def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     monkeypatch, tmp_path, capsys
 ) -> None:
