@@ -138,21 +138,27 @@ port_occupied() {
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
-# Reap any reflexio/uvicorn listener still holding the given port after
-# the PID file kill. Filters by cmdline so we don't knock over an
+# Reap listeners still holding the given port after the PID file kill
+# when their command line matches one of the supplied patterns. Filters
+# by cmdline so we don't knock over an
 # unrelated service a user has bound there — symmetric with start's
 # refusal to stomp on a foreign listener. Silent on failure.
 reap_port_listeners() {
   port="${1:-$PORT}"
+  shift || true
+  [ "$#" -eq 0 ] && return 0
   command -v lsof >/dev/null 2>&1 || return 0
   candidates=$(lsof -ti:"$port" 2>/dev/null) || candidates=""
   [ -z "$candidates" ] && return 0
   ours=""
   for pid in $candidates; do
     cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
-    case "$cmdline" in
-      *reflexio*|*uvicorn*) ours="$ours $pid" ;;
-    esac
+    for pattern in "$@"; do
+      if [[ "$cmdline" == $pattern ]]; then
+        ours="$ours $pid"
+        break
+      fi
+    done
   done
   [ -z "$ours" ] && return 0
   # shellcheck disable=SC2086
@@ -188,9 +194,11 @@ full_stop() {
     kill_group "$(cat "$PID_FILE" 2>/dev/null)"
     rm -f "$PID_FILE"
   fi
-  reap_port_listeners "$PORT"
+  reap_port_listeners "$PORT" '*reflexio*' '*uvicorn*'
   if [ -n "${EMBEDDING_PORT:-}" ] && [ "$EMBEDDING_PORT" != "$PORT" ]; then
-    reap_port_listeners "$EMBEDDING_PORT"
+    reap_port_listeners "$EMBEDDING_PORT" \
+      '*reflexio.server.llm.embedding_service:app*' \
+      '*reflexio*embedding_service*'
   fi
 }
 

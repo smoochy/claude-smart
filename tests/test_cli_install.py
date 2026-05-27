@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,41 @@ def test_cmd_install_fails_when_dependency_bootstrap_fails(
     rc = cli.cmd_install(argparse.Namespace(host="claude-code", source="unused"))
 
     assert rc == 1
+
+
+def test_cmd_install_refresh_existing_uninstalls_and_retries(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+    install_attempts = 0
+
+    def fake_run(cmd, check=False):
+        nonlocal install_attempts
+        command = [str(part) for part in cmd]
+        calls.append(command)
+        if command[1:3] == ["plugin", "install"]:
+            install_attempts += 1
+            if install_attempts == 1:
+                raise subprocess.CalledProcessError(returncode=17, cmd=command)
+        return argparse.Namespace(returncode=0)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda: False)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli, "_bootstrap_claude_code_install", lambda: (True, str(tmp_path / "plugin"))
+    )
+    monkeypatch.setattr(cli, "_restore_publish_hooks_from_source", lambda _root: None)
+
+    rc = cli.cmd_install(argparse.Namespace(host="claude-code", refresh_existing=True))
+
+    assert rc == 0
+    assert calls == [
+        ["claude", "plugin", "marketplace", "add", str(cli._REPO_ROOT)],
+        ["claude", "plugin", "install", cli._PLUGIN_SPEC],
+        ["claude", "plugin", "uninstall", cli._PLUGIN_SPEC],
+        ["claude", "plugin", "install", cli._PLUGIN_SPEC],
+    ]
 
 
 def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) -> None:
@@ -365,6 +401,68 @@ def test_restore_publish_hooks_from_source_restores_pruned_manifest(
 def test_update_parser_no_longer_accepts_api_key() -> None:
     with pytest.raises(SystemExit):
         cli._build_parser().parse_args(["update", "--api-key", "rflx-key"])
+
+
+def test_update_parser_accepts_host_codex() -> None:
+    args = cli._build_parser().parse_args(["update", "--host", "codex"])
+
+    assert args.host == "codex"
+
+
+def test_cmd_update_claude_code_stops_services_then_installs(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_run_service(script, subcmd):
+        calls.append((script.name, subcmd))
+        return 0
+
+    def fake_install(args):
+        calls.append(("install", args.host))
+        assert args.refresh_existing is True
+        assert args.marker == "kept"
+        return 0
+
+    monkeypatch.setattr(cli, "_run_service", fake_run_service)
+    monkeypatch.setattr(cli, "cmd_install", fake_install)
+
+    rc = cli.cmd_update(argparse.Namespace(host="claude-code", marker="kept"))
+
+    assert rc == 0
+    assert calls == [
+        ("dashboard-service.sh", "stop"),
+        ("backend-service.sh", "stop"),
+        ("install", "claude-code"),
+    ]
+
+
+def test_cmd_update_codex_stops_cache_services_then_installs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "codex-cache" / "0.2.41"
+    calls: list[tuple[str, str]] = []
+
+    def fake_run_service(script, subcmd):
+        calls.append((script.name, subcmd))
+        return 0
+
+    def fake_install(args):
+        calls.append(("install-codex", args.host))
+        assert args.marker == "kept"
+        return 0
+
+    monkeypatch.setattr(cli, "_find_codex_plugin_root", lambda: plugin_root)
+    monkeypatch.setattr(cli, "_run_service", fake_run_service)
+    monkeypatch.setattr(cli, "cmd_install_codex", fake_install)
+
+    rc = cli.cmd_update(argparse.Namespace(host="codex", marker="kept"))
+
+    assert rc == 0
+    assert calls == [
+        ("dashboard-service.sh", "stop"),
+        ("backend-service.sh", "stop"),
+        ("install-codex", "codex"),
+    ]
 
 
 def test_cmd_update_reads_managed_reflexio_env(

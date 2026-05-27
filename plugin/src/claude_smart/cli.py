@@ -802,6 +802,23 @@ def _install_codex_plugin_cache(plugin_root: Path) -> tuple[bool, str]:
     return True, f"installed Codex plugin cache at {cache_dir}"
 
 
+def _find_codex_plugin_root() -> Path | None:
+    """Locate the latest installed Codex plugin cache root."""
+    candidates = (
+        [
+            child
+            for child in _CODEX_PLUGIN_CACHE_DIR.iterdir()
+            if child.is_dir()
+            and (child / "pyproject.toml").is_file()
+            and (child / "scripts" / "smart-install.sh").is_file()
+        ]
+        if _CODEX_PLUGIN_CACHE_DIR.is_dir()
+        else []
+    )
+    candidates.sort(key=_installed_plugin_sort_key, reverse=True)
+    return candidates[0] if candidates else None
+
+
 def _cleanup_codex_install_state() -> bool:
     """Remove Codex's local install artifacts while preserving shared learning data.
 
@@ -1076,6 +1093,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 1
     read_only = _configure_reflexio_setup()
 
+    refresh_existing = bool(getattr(args, "refresh_existing", False))
     for cmd in (
         ["claude", "plugin", "marketplace", "add", str(_REPO_ROOT)],
         ["claude", "plugin", "install", _PLUGIN_SPEC],
@@ -1083,6 +1101,19 @@ def cmd_install(args: argparse.Namespace) -> int:
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as exc:
+            if refresh_existing and cmd[1:3] == ["plugin", "install"]:
+                sys.stderr.write(
+                    f"warning: {' '.join(cmd)} failed (exit {exc.returncode}); "
+                    f"retrying after uninstalling {_PLUGIN_SPEC}\n"
+                )
+                subprocess.run(
+                    ["claude", "plugin", "uninstall", _PLUGIN_SPEC], check=False
+                )
+                try:
+                    subprocess.run(cmd, check=True)
+                    continue
+                except subprocess.CalledProcessError as retry_exc:
+                    exc = retry_exc
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
 
@@ -1111,41 +1142,44 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    """Update claude-smart to the latest version via the native plugin CLI.
+    """Update claude-smart by reinstalling from this package.
 
-    Runs ``claude plugin update claude-smart@reflexioai``.
+    The simplified install path registers the bundled package root as the
+    marketplace, so update is a stop + reinstall instead of
+    ``claude plugin update``.
 
     Args:
-        args (argparse.Namespace): Parsed CLI args (unused).
+        args (argparse.Namespace): Parsed CLI args.
 
     Returns:
-        int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
+        int: 0 on success, non-zero if the host CLI is missing or install fails.
     """
-    if not shutil.which("claude"):
-        sys.stderr.write(
-            "error: 'claude' CLI not found on PATH. "
-            "Install Claude Code first: https://claude.com/claude-code\n"
-        )
-        return 1
+    if getattr(args, "host", "claude-code") == "codex":
+        return cmd_update_codex(args)
 
-    read_only = _configure_reflexio_setup()
-    cmd = ["claude", "plugin", "update", _PLUGIN_SPEC]
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as exc:
-        sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
-        return exc.returncode or 1
+    _run_service(_DASHBOARD_SCRIPT, "stop")
+    _run_service(_BACKEND_SCRIPT, "stop")
+    sys.stdout.write("Updating claude-smart by reinstalling from this package...\n")
+    install_args = argparse.Namespace(**vars(args), refresh_existing=True)
+    install_args.host = "claude-code"
+    return cmd_install(install_args)
 
-    sys.stdout.write("\nclaude-smart updated. Restart Claude Code to apply.\n")
-    plugin_root = _find_claude_code_plugin_root()
+
+def cmd_update_codex(_args: argparse.Namespace) -> int:
+    """Update Codex support by refreshing its marketplace/cache install."""
+    plugin_root = _find_codex_plugin_root()
     if plugin_root is not None:
-        _restore_publish_hooks_from_source(plugin_root)
-        if read_only:
-            _prune_publish_hooks_for_read_only(plugin_root)
-            sys.stdout.write(
-                "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
-            )
-    return 0
+        _run_service(plugin_root / "scripts" / "dashboard-service.sh", "stop")
+        _run_service(plugin_root / "scripts" / "backend-service.sh", "stop")
+    else:
+        _run_service(_DASHBOARD_SCRIPT, "stop")
+        _run_service(_BACKEND_SCRIPT, "stop")
+    sys.stdout.write(
+        "Updating claude-smart Codex support by reinstalling from this package...\n"
+    )
+    install_args = argparse.Namespace(**vars(_args))
+    install_args.host = "codex"
+    return cmd_install_codex(install_args)
 
 
 def cmd_uninstall(_args: argparse.Namespace) -> int:
@@ -1954,6 +1988,12 @@ def _build_parser() -> argparse.ArgumentParser:
     inst.set_defaults(func=cmd_install)
 
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
+    upd.add_argument(
+        "--host",
+        choices=("claude-code", "codex"),
+        default="claude-code",
+        help="Update target host",
+    )
     upd.set_defaults(func=cmd_update)
 
     uni = sub.add_parser("uninstall", help="Remove claude-smart")
