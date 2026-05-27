@@ -42,9 +42,6 @@ benchmarks/memory_comparison/results
 # Playwright MCP session dumps
 .playwright-mcp/
 
-# Local marketplace
-local-marketplace/
-
 # Generated release vendor bundle
 /plugin/vendor/
 

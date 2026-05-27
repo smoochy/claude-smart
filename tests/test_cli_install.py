@@ -9,7 +9,6 @@ import stat
 from pathlib import Path
 
 import pytest
-
 from claude_smart import cli
 
 
@@ -242,7 +241,7 @@ def test_install_parser_keeps_plain_install() -> None:
     args = cli._build_parser().parse_args(["install"])
 
     assert args.host == "claude-code"
-    assert args.source == "ReflexioAI/claude-smart"
+    assert not hasattr(args, "source")
 
 
 def test_install_parser_no_longer_accepts_managed_flags() -> None:

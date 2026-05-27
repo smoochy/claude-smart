@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
  * npx claude-smart install — thin wrapper around the native host plugin
- * CLIs. For Claude Code it registers the GitHub marketplace and installs the
- * plugin. For Codex it copies the bundled local marketplace, registers it,
- * and enables plugin hooks. Both paths seed ~/.reflexio/.env with the two
- * local-provider flags so reflexio can route generation through local tools
- * with no API key. Managed/read-only/global setup is handled by
- * `npx claude-smart setup`, which writes ~/.reflexio/.env before running this
- * installer.
+ * CLIs. Both Claude Code and Codex install from the bundled marketplace in
+ * this npm package: Claude Code registers the package root as a local
+ * marketplace, and Codex copies the bundled plugin into its own marketplace
+ * wrapper. Both paths seed ~/.reflexio/.env with the two local-provider flags
+ * so reflexio can route generation through local tools with no API key.
+ * Managed/read-only/global setup is handled by `npx claude-smart setup`,
+ * which writes ~/.reflexio/.env before running this installer.
  *
  * Keep this file dependency-free — it runs via `npx` with no install step.
  */
@@ -33,7 +33,6 @@ const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
 const { dirname, join } = require("path");
 
-const DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart";
 const PLUGIN_SPEC = "claude-smart@reflexioai";
 const CODEX_MARKETPLACE_NAME = "reflexioai";
 const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
@@ -960,13 +959,12 @@ function printHelp() {
       "Usage:",
       "  npx claude-smart install                       Install the plugin into Claude Code",
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
-      "  npx claude-smart install --source <owner/repo> Override the marketplace source",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart --help                        Show this help",
       "",
       "Claude Code install:",
-      "  1. claude plugin marketplace add <source>",
+      "  1. claude plugin marketplace add <this package>",
       `  2. claude plugin install ${PLUGIN_SPEC}`,
       "  3. Reads ~/.reflexio/.env when managed/read-only setup was configured.",
       "",
@@ -988,17 +986,6 @@ function printHelp() {
       "",
     ].join("\n"),
   );
-}
-
-function parseSource(args) {
-  const idx = args.indexOf("--source");
-  if (idx === -1) return DEFAULT_MARKETPLACE_SOURCE;
-  const value = args[idx + 1];
-  if (!value) {
-    process.stderr.write("error: --source requires a value (e.g. owner/repo)\n");
-    process.exit(1);
-  }
-  return value;
 }
 
 function parseHost(args) {
@@ -1489,7 +1476,7 @@ async function runInstall(args) {
     process.exit(1);
   }
 
-  const source = parseSource(args);
+  const source = PACKAGE_ROOT;
   const setup = configureReflexioSetup();
   const readOnly = setup.readOnly;
 

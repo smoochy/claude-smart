@@ -18,10 +18,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
-SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
-USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
-DOCTOR_REFLEXIO = REPO_ROOT / "scripts" / "doctor-reflexio.py"
 SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
+CLAUDE_SMART_BIN = REPO_ROOT / "bin" / "claude-smart.js"
 CHECK_REFLEXIO_LOCK = REPO_ROOT / "scripts" / "check-reflexio-lock.py"
 VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
 RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
@@ -265,10 +263,7 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
         "[claude-smart] backend: uv not on PATH; starting installer in background"
         in backend
     )
-    assert (
-        'claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1'
-        in backend
-    )
+    assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in backend
     assert (
         "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping"
         in backend
@@ -277,10 +272,7 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
         "[claude-smart] dashboard: npm is not on PATH; starting installer in background"
         in dashboard
     )
-    assert (
-        'claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1'
-        in dashboard
-    )
+    assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in dashboard
     assert (
         "npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
         in dashboard
@@ -853,19 +845,13 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
 
 
 def test_installers_start_backend_and_refresh_dashboard_services() -> None:
-    setup = SETUP_LOCAL_DEV.read_text()
     node_installer = NODE_INSTALLER.read_text()
     smart_install = SMART_INSTALL.read_text()
 
-    assert "refresh_local_dashboard()" in setup
-    assert "restart_local_backend()" in setup
-    assert 'bash "$backend_script" start' in setup
     assert 'bash "$HERE/backend-service.sh" start' in smart_install
     assert "start_backend_service()" in smart_install
     assert "if install_complete; then\n  start_backend_service" in smart_install
     assert "Backend started; dashboard auto-starts on session start." in smart_install
-    assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" stop' in setup
-    assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start' in setup
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
@@ -874,8 +860,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
     assert (
-        'runPluginService(pluginRoot, "backend-service.sh", "start"'
-        in node_installer
+        'runPluginService(pluginRoot, "backend-service.sh", "start"' in node_installer
     )
     assert 'startBackendService(pluginRoot, "claude-code")' in node_installer
     assert 'startBackendService(cacheDir, "codex")' in node_installer
@@ -905,82 +890,25 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
     assert "if claude_smart_is_internal_invocation_env; then" in dashboard
 
 
-def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
-    script = SETUP_LOCAL_DEV.read_text()
+def test_claude_code_install_uses_bundled_package_root() -> None:
+    """Regression guard: Claude Code installer must point `claude plugin marketplace
+    add` at the npm package root (which carries the bundled plugin), not a GitHub
+    owner/repo ref. Otherwise `make package` no longer end-to-end tests local
+    plugin changes for Claude Code."""
+    node_installer = CLAUDE_SMART_BIN.read_text()
+    py_cli = (REPO_ROOT / "plugin" / "src" / "claude_smart" / "cli.py").read_text()
 
-    assert "claude plugin update -s user claude-smart@reflexioai-local" in script
-    assert "claude plugin install -s user claude-smart@reflexioai-local" in script
-    assert "installing/updating claude-smart@reflexioai-local" in script
-    assert "--read-only" in script
-    assert "CLAUDE_SMART_READ_ONLY" in script
-    assert "node bin/claude-smart.js install --host codex --read-only" not in script
-    assert "node bin/claude-smart.js install --host codex" in script
-    assert 'USER_SETTINGS_FILE="$HOME/.claude/settings.json"' in script
-    assert 'enabled = data.get("enabledPlugins")' in script
-    assert 'data["enabledPlugins"] = {}' in script
-    assert 'enabled["claude-smart@reflexioai-local"] = True' in script
-    assert 'enabled["claude-smart@reflexioai"] = False' in script
-    assert "user-scope local enabled, @reflexioai disabled" in script
-    assert "install_editable_reflexio_into_codex_cache" in script
-    assert "write_local_reflexio_uv_source" in script
-    assert "[tool.uv.sources]" in script
-    assert (
-        "reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}"
-        in script
-    )
-    assert (
-        "writing local Reflexio source override into Codex marketplace snapshot"
-        in script
-    )
-    assert (
-        'uv pip install --project "$cache_root" --python "$cache_python" '
-        '-e "$REFLEXIO_ABS"'
-    ) in script
-    assert "Codex plugin cache imports Reflexio from" in script
-    assert "Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS" in script
+    # Node installer: source must be PACKAGE_ROOT, not a GitHub ref.
+    assert "const source = PACKAGE_ROOT;" in node_installer
+    assert "DEFAULT_MARKETPLACE_SOURCE" not in node_installer
+    assert "parseSource(" not in node_installer
+    assert '"ReflexioAI/claude-smart"' not in node_installer
+    assert "--source" not in node_installer
 
-
-def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
-    script = SETUP_LOCAL_DEV.read_text()
-
-    assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
-    assert "REFLEXIO_PATH" in script
-    assert "expand_user_path()" in script
-    assert 'reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"' in script
-    assert (
-        'reflexio_env_path="$(expand_user_path "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"'
-    ) in script
-    assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
-    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' not in script
-    assert "git submodule update --init --recursive reflexio" not in script
-    assert 'bash "$REPO_ROOT/scripts/use-local-reflexio.sh"' in script
-    assert "using Reflexio source at $REFLEXIO_ABS" in script
-    assert "override_learning_stall" in script
-    assert "selected Reflexio client does not support" in script
-    assert "verify source → make doctor-reflexio" in script
-
-
-def test_use_local_reflexio_installs_into_plugin_venv() -> None:
-    script = USE_LOCAL_REFLEXIO.read_text()
-    doctor = DOCTOR_REFLEXIO.read_text()
-    makefile = (REPO_ROOT / "Makefile").read_text()
-
-    assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
-    assert 'REFLEXIO_PATH="$(expand_user_path "$REFLEXIO_PATH")"' in script
-    assert 'uv sync --project "$PLUGIN_ROOT"' in script
-    assert "resolve_venv_python()" in script
-    assert 'if ! PLUGIN_PYTHON="$(resolve_venv_python "$PLUGIN_ROOT")"; then' in script
-    assert "$venv_root/Scripts/python.exe" in script
-    assert (
-        'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
-        '-e "$REFLEXIO_PATH"'
-    ) in script
-    assert 'python3 "$REPO_ROOT/scripts/doctor-reflexio.py"' in script
-    assert "Detected source: {source}" in doctor
-    assert "Fix: bash scripts/use-local-reflexio.sh" in doctor
-    assert "using PyPI/other Reflexio even though a local checkout exists" in doctor
-    assert "doctor-reflexio:" in makefile
-    assert "python3 scripts/doctor-reflexio.py" in makefile
+    # Python CLI mirrors it: passes _REPO_ROOT to `claude plugin marketplace add`.
+    assert '["claude", "plugin", "marketplace", "add", str(_REPO_ROOT)]' in py_cli
+    assert "_DEFAULT_MARKETPLACE_SOURCE" not in py_cli
+    assert '"--source"' not in py_cli
 
 
 def test_reflexio_release_sync_has_strict_release_checks() -> None:
@@ -1388,8 +1316,7 @@ def test_claude_code_install_hook_matches_session_start_modes() -> None:
     assert "smart-install.sh" in setup_block["hooks"][0]["command"]
     assert runtime_block["matcher"] == "startup|clear|compact|resume"
     assert all(
-        "smart-install.sh" not in hook["command"]
-        for hook in runtime_block["hooks"]
+        "smart-install.sh" not in hook["command"] for hook in runtime_block["hooks"]
     )
     session_start_hook = runtime_block["hooks"][1]
     assert "hook_entry.sh" in session_start_hook["command"]

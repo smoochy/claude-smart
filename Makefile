@@ -8,16 +8,17 @@
 #   make publish-npm                 npm publish only
 #   make publish-pypi                uv build + uv publish only
 #   make publish-dry                 Show what would ship without uploading
+#   make package                     Build the npm tarball locally without publishing
 #
 # Requires:
 #   - npm (logged in, or NPM_TOKEN set)
 #   - uv (UV_PUBLISH_TOKEN set for PyPI uploads)
 #   - git (for the release flow)
 
-.PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry \
+.PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry package \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
-        check-vendor-reflexio check-pypi-compatible-reflexio ensure-remote-reflexio \
-        check-locked-project-version doctor-reflexio unskip-worktree
+        check-vendor-reflexio check-pypi-compatible-reflexio \
+        check-locked-project-version unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -61,9 +62,6 @@ check-vendor-reflexio: ## Verify generated Reflexio vendor bundle exists when th
 check-pypi-compatible-reflexio: ## Refuse PyPI publish when this release relies on a generated vendor bundle
 	@python3 -c 'import json, pathlib, sys; p=pathlib.Path("reflexio.lock.json"); data=json.loads(p.read_text()) if p.exists() else {}; sys.exit("error: reflexio.lock.json uses source=vendor; publish npm only with `make release-npm VERSION=...`, or run `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` first" if data.get("source") == "vendor" else 0)'
 
-doctor-reflexio: ## Show whether plugin/.venv imports local, vendor, or PyPI Reflexio
-	@python3 scripts/doctor-reflexio.py
-
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
 	  echo "→ npm: NPM_TOKEN is set"; \
@@ -89,14 +87,7 @@ check-locked-project-version: ## Verify plugin/uv.lock claude-smart version matc
 	  fi; \
 	  echo "→ ok: plugin/uv.lock claude-smart matches $(PYPROJECT) ($$manifest)"
 
-ensure-remote-reflexio: ## Ensure published wheels resolve reflexio-ai from PyPI, not a local path
-	@echo "→ ensuring $(PYPROJECT) resolves reflexio-ai from PyPI"
-	@if grep -qE '^\[tool\.uv\.sources\]|reflexio-ai = \{ path =|file://' $(PYPROJECT); then \
-	  echo "error: local reflexio-ai source found in $(PYPROJECT); use scripts/use-local-reflexio.sh for editable local dev" >&2; \
-	  exit 1; \
-	fi
-
-bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in all release manifests
+bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	@echo "→ bumping to $(VERSION)"
 	@sed -i.bak -E 's/"version": "[^"]+"/"version": "$(VERSION)"/' \
 	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -127,13 +118,13 @@ publish-npm: check-vendor-reflexio check-locked-project-version ## Publish the c
 	@echo "→ npm publish"
 	npm publish --access public
 
-publish-pypi: check-pypi-compatible-reflexio unskip-worktree ensure-remote-reflexio ## Build and publish the current version to PyPI
+publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publish the current version to PyPI
 	@echo "→ uv build + uv publish"
 	rm -rf plugin/dist/
 	uv build --project plugin --out-dir plugin/dist
 	uv publish --project plugin plugin/dist/*
 
-publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
+publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm publish --dry-run
 	@echo ""
@@ -141,6 +132,19 @@ publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio check-
 	rm -rf plugin/dist/
 	uv build --project plugin
 	@ls -la plugin/dist/
+
+package: check-vendor-reflexio check-locked-project-version ## Build the npm tarball locally without publishing
+	@echo "→ npm pack"
+	@tarball=$$(npm pack 2>/dev/null | tail -1); \
+	  abs=$$(cd "$$(dirname "$$tarball")" && pwd)/$$(basename "$$tarball"); \
+	  echo ""; \
+	  echo "✓ built $$abs"; \
+	  echo ""; \
+	  echo "Install locally with one of:"; \
+	  echo "  npm install -g $$abs && claude-smart install"; \
+	  echo "  npm install -g $$abs && claude-smart install --host codex"; \
+	  echo "  npx --package=$$abs -- claude-smart install"; \
+	  echo "  npx --package=$$abs -- claude-smart install --host codex"
 
 publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
 

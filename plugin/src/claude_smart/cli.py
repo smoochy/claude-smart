@@ -38,7 +38,6 @@ from claude_smart.reflexio_adapter import Adapter
 
 _REFLEXIO_ENV_PATH = env_config.REFLEXIO_ENV_PATH
 _MANAGED_REFLEXIO_URL = env_config.MANAGED_REFLEXIO_URL
-_DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart"
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
 _CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI"
@@ -1055,13 +1054,13 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
 def cmd_install(args: argparse.Namespace) -> int:
     """Install claude-smart into Claude Code via the native plugin CLI.
 
-    Runs ``claude plugin marketplace add`` followed by ``claude plugin install``,
-    then appends the local-provider flags to ``~/.reflexio/.env`` so reflexio
-    can route generation through the local Claude Code CLI.
+    Runs ``claude plugin marketplace add`` (pointed at the bundled marketplace
+    at ``_REPO_ROOT``) followed by ``claude plugin install``, then appends the
+    local-provider flags to ``~/.reflexio/.env`` so reflexio can route
+    generation through the local Claude Code CLI.
 
     Args:
-        args (argparse.Namespace): Parsed CLI args. Uses ``args.source`` as the
-            marketplace ref (``owner/repo`` on GitHub, or a local directory).
+        args (argparse.Namespace): Parsed CLI args.
 
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
@@ -1078,7 +1077,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     read_only = _configure_reflexio_setup()
 
     for cmd in (
-        ["claude", "plugin", "marketplace", "add", args.source],
+        ["claude", "plugin", "marketplace", "add", str(_REPO_ROOT)],
         ["claude", "plugin", "install", _PLUGIN_SPEC],
     ):
         try:
@@ -1951,11 +1950,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("claude-code", "codex"),
         default="claude-code",
         help="Install target host",
-    )
-    inst.add_argument(
-        "--source",
-        default=_DEFAULT_MARKETPLACE_SOURCE,
-        help="Marketplace ref — GitHub owner/repo, or a local directory path",
     )
     inst.set_defaults(func=cmd_install)
 
