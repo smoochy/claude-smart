@@ -73,3 +73,41 @@ def publish_unpublished(
         state.append(session_id, {"published_up_to": len(records)})
         return ("ok", len(interactions))
     return ("failed", len(interactions))
+
+
+def publish_full_session(
+    *,
+    session_id: str,
+    project_id: str,
+    force_extraction: bool,
+    skip_aggregation: bool,
+    override_learning_stall: bool = False,
+    adapter: Adapter | None = None,
+) -> tuple[PublishStatus, int]:
+    """Publish every buffered turn, ignoring incremental watermarks.
+
+    Codex does not emit Stop/SessionEnd hooks, so its PostToolUse fallback
+    publishes incrementally during the turn. Those incremental publishes stamp
+    ``published_up_to`` markers, which are correct for normal delivery but bad
+    for a final extraction pass: by the time the SWE-bench sentinel tool fires,
+    ``publish_unpublished`` can only see the last tiny tail. This helper is the
+    explicit final-flush path for Codex-like hosts that need extraction over
+    the whole useful session.
+    """
+    records = [rec for rec in state.read_all(session_id) if rec.get("role")]
+    _, interactions = state.unpublished_slice(records)
+    if not interactions:
+        return ("nothing", 0)
+    client = adapter if adapter is not None else Adapter()
+    ok = client.publish(
+        session_id=session_id,
+        project_id=project_id,
+        interactions=interactions,
+        force_extraction=force_extraction,
+        override_learning_stall=override_learning_stall,
+        skip_aggregation=skip_aggregation,
+    )
+    if ok:
+        state.append(session_id, {"published_up_to": len(state.read_all(session_id))})
+        return ("ok", len(interactions))
+    return ("failed", len(interactions))

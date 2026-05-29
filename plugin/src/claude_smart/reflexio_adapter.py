@@ -6,16 +6,15 @@ Exists so hook handlers (a) don't import reflexio directly at module scope
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
-import inspect
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_smart import env_config
-from claude_smart import runtime
+from claude_smart import env_config, runtime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -378,8 +377,17 @@ class Adapter:
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("unified search", exc)
             return [], [], []
+        user_playbooks = _extract_items(response, "user_playbooks")
+        if not user_playbooks:
+            # Same-user playbooks are high-value immediately after an extraction
+            # run, especially benchmark A→B pairs. Hybrid search can miss broad
+            # recipes whose trigger does not lexically match the next prompt, so
+            # fall back to recent project-scoped playbooks before injecting none.
+            user_playbooks = self.fetch_user_playbooks(
+                project_id=project_id, top_k=top_k
+            )
         return (
-            _extract_items(response, "user_playbooks"),
+            user_playbooks,
             _filter_rejected_agent_playbooks(
                 _extract_items(response, "agent_playbooks")
             ),

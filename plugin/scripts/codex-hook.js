@@ -203,7 +203,7 @@ function loadReflexioEnv() {
     const eq = line.indexOf("=");
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
-    if (managedReflexioKeys.has(key)) {
+    if (managedReflexioKeys.has(key) && !process.env[key]) {
       process.env[key] = unquoteEnvValue(line.slice(eq + 1));
     } else if (localConfigKeys.has(key) && !process.env[key]) {
       process.env[key] = unquoteEnvValue(line.slice(eq + 1));

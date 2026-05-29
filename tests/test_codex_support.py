@@ -56,6 +56,7 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert "function loadReflexioEnv()" in script
     assert '"REFLEXIO_API_KEY"' in script
     assert '"CLAUDE_SMART_READ_ONLY"' in script
+    assert "managedReflexioKeys.has(key) && !process.env[key]" in script
     assert "function reflexioUrlIsRemote()" in script
     assert "remote REFLEXIO_URL configured; skipping local backend start" in script
     assert "loadReflexioEnv();" in script
@@ -509,6 +510,113 @@ def test_codex_post_tool_publishes_synthetic_assistant_anchor(
     assert records[1]["synthesised_by"] == "codex_post_tool_anchor"
     assert calls and calls[0]["session_id"] == "s2"
     assert calls[0]["force_extraction"] is False
+
+
+def test_codex_post_tool_final_sentinel_publishes_full_session(
+    session_dir, monkeypatch
+) -> None:
+    """A SWE-bench sentinel tool is Codex's substitute for SessionEnd.
+
+    The final publish must ignore prior incremental watermarks and force
+    extraction over the whole session, otherwise the extractor only sees the
+    last tool tail and misses the original task prompt.
+    """
+    runtime.set_host(runtime.HOST_CODEX)
+    state.append(
+        "s_final",
+        {
+            "role": "User",
+            "content": "Fix the bug, then touch /tmp/swebench-done-demo__task-1",
+            "user_id": "demo__task-1",
+        },
+    )
+    state.append("s_final", {"published_up_to": 1})
+
+    applied_defaults: list[dict[str, int]] = []
+    full_calls: list[dict[str, Any]] = []
+    incremental_calls: list[dict[str, Any]] = []
+
+    class FakeAdapter:
+        def apply_extraction_defaults(
+            self, *, window_size: int, stride_size: int
+        ) -> bool:
+            applied_defaults.append(
+                {"window_size": window_size, "stride_size": stride_size}
+            )
+            return True
+
+    def fake_full_publish(**kwargs: Any) -> tuple[str, int]:
+        full_calls.append(kwargs)
+        return ("ok", 3)
+
+    def fake_incremental_publish(**kwargs: Any) -> tuple[str, int]:
+        incremental_calls.append(kwargs)
+        return ("ok", 1)
+
+    monkeypatch.setattr(post_tool, "Adapter", FakeAdapter)
+    monkeypatch.setattr(post_tool.publish, "publish_full_session", fake_full_publish)
+    monkeypatch.setattr(
+        post_tool.publish, "publish_unpublished", fake_incremental_publish
+    )
+
+    post_tool.handle(
+        {
+            "session_id": "s_final",
+            "tool_name": "Bash",
+            "tool_input": {"command": "touch /tmp/swebench-done-demo__task-1"},
+            "tool_response": {"stdout": ""},
+            "cwd": "/tmp/demo__task-1",
+        }
+    )
+
+    assert incremental_calls == []
+    assert full_calls and full_calls[0]["session_id"] == "s_final"
+    assert full_calls[0]["force_extraction"] is True
+    assert applied_defaults == [{"window_size": 5, "stride_size": 1}]
+    records = state.read_all("s_final")
+    assert [r.get("role") for r in records if r.get("role")] == [
+        "User",
+        "Assistant_tool",
+        "Assistant",
+    ]
+
+
+def test_publish_full_session_ignores_incremental_watermarks(session_dir) -> None:
+    state.append("s_full", {"role": "User", "content": "original task"})
+    state.append("s_full", {"published_up_to": 1})
+    state.append(
+        "s_full",
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "status": "success",
+        },
+    )
+    state.append("s_full", {"role": "Assistant", "content": "ran tests"})
+
+    published: dict[str, Any] = {}
+
+    class FakeAdapter:
+        def publish(self, **kwargs: Any) -> bool:
+            published.update(kwargs)
+            return True
+
+    status, count = post_tool.publish.publish_full_session(
+        session_id="s_full",
+        project_id="demo",
+        force_extraction=True,
+        skip_aggregation=False,
+        adapter=FakeAdapter(),
+    )
+
+    assert (status, count) == ("ok", 2)
+    assert [item["role"] for item in published["interactions"]] == [
+        "User",
+        "Assistant",
+    ]
+    assert published["interactions"][0]["content"] == "original task"
+    assert published["interactions"][1]["tools_used"][0]["tool_name"] == "Bash"
 
 
 def test_claude_code_post_tool_does_not_publish(session_dir, monkeypatch) -> None:

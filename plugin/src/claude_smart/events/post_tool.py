@@ -12,11 +12,13 @@ PostToolUse when the host is Codex — see ``_maybe_flush_codex`` below.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from typing import Any
 
 from claude_smart import ids, publish, runtime, state
+from claude_smart.reflexio_adapter import Adapter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ def _looks_like_secret(value: str) -> bool:
 
 
 def _mask_secrets(text: str) -> str:
-    def sub(match: "re.Match[str]") -> str:
+    def sub(match: re.Match[str]) -> str:
         value = match.group("value")
         if not _looks_like_secret(value):
             return match.group(0)
@@ -86,9 +88,10 @@ def _derive_status(tool_response: Any) -> str:
     ``tool_response``, which may be a dict (with an ``is_error`` / ``error``
     field) or a bare string. Unknown shapes default to success.
     """
-    if isinstance(tool_response, dict):
-        if tool_response.get("is_error") or tool_response.get("error"):
-            return "error"
+    if isinstance(tool_response, dict) and (
+        tool_response.get("is_error") or tool_response.get("error")
+    ):
+        return "error"
     return "success"
 
 
@@ -144,6 +147,35 @@ def _flatten_tool_response_text(tool_response: Any) -> str:
 _CODEX_SYNTHETIC_ASSISTANT_TEXT = (
     "<codex turn in progress — synthesised anchor for incremental publish>"
 )
+_FINAL_TOOL_PATTERN_ENV = "CLAUDE_SMART_CODEX_FINAL_TOOL_PATTERN"
+_DEFAULT_FINAL_TOOL_PATTERN = "swebench-done-"
+_MIN_FINAL_WINDOW_SIZE = 5
+
+
+def _tool_text(payload: dict[str, Any]) -> str:
+    tool_input = payload.get("tool_input")
+    parts: list[str] = []
+    if isinstance(tool_input, dict):
+        parts.extend(str(v) for v in tool_input.values() if isinstance(v, str))
+    elif isinstance(tool_input, str):
+        parts.append(tool_input)
+    response_text = _flatten_tool_response_text(payload.get("tool_response"))
+    if response_text:
+        parts.append(response_text)
+    return "\n".join(parts)
+
+
+def _is_final_codex_tool(payload: dict[str, Any]) -> bool:
+    pattern = os.environ.get(_FINAL_TOOL_PATTERN_ENV, _DEFAULT_FINAL_TOOL_PATTERN)
+    if not pattern:
+        return False
+    return pattern in _tool_text(payload)
+
+
+def _interaction_count_for_full_session(session_id: str) -> int:
+    records = [rec for rec in state.read_all(session_id) if rec.get("role")]
+    _, interactions = state.unpublished_slice(records)
+    return len(interactions)
 
 
 def _maybe_flush_codex(*, session_id: str, payload: dict[str, Any]) -> None:
@@ -191,6 +223,19 @@ def _maybe_flush_codex(*, session_id: str, payload: dict[str, Any]) -> None:
         },
     )
     try:
+        if _is_final_codex_tool(payload):
+            interaction_count = _interaction_count_for_full_session(session_id)
+            Adapter().apply_extraction_defaults(
+                window_size=max(_MIN_FINAL_WINDOW_SIZE, interaction_count),
+                stride_size=1,
+            )
+            publish.publish_full_session(
+                session_id=session_id,
+                project_id=project_id,
+                force_extraction=True,
+                skip_aggregation=False,
+            )
+            return
         publish.publish_unpublished(
             session_id=session_id,
             project_id=project_id,

@@ -415,11 +415,31 @@ def test_search_all_calls_unified_endpoint_with_project_scope() -> None:
 def test_search_all_makes_one_client_call() -> None:
     """Server-side fan-out: a single /api/search hits all three legs."""
     client = _RecordingClient(
-        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+        unified_resp=SimpleNamespace(
+            user_playbooks=[{"content": "u"}], agent_playbooks=[], profiles=[]
+        )
     )
     a = _adapter_with(client)
     a.search_all(project_id="p", query="q")
     assert client.search_call_count == 1
+    assert client.user_playbook_kwargs == {}
+
+
+def test_search_all_falls_back_to_recent_project_user_playbooks() -> None:
+    """If query search misses project playbooks, inject recent same-user rows."""
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[]),
+        user_playbook_resp=SimpleNamespace(user_playbooks=[{"content": "recent"}]),
+    )
+    a = _adapter_with(client)
+    user_pb, agent_pb, profiles = a.search_all(project_id="p", query="q", top_k=3)
+
+    assert user_pb == [{"content": "recent"}]
+    assert agent_pb == []
+    assert profiles == []
+    assert client.search_call_count == 1
+    assert client.user_playbook_kwargs["user_id"] == "p"
+    assert client.user_playbook_kwargs["top_k"] == 3
 
 
 def test_search_all_returns_three_empty_lists_on_error() -> None:
