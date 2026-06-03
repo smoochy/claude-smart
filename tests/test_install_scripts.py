@@ -1351,6 +1351,71 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert f"-e {vendor}" in uv_log
 
 
+def test_smart_install_redirects_reflexio_session_copies_to_stable_root(
+    tmp_path: Path,
+) -> None:
+    """Regression: Claude Code can expose CLAUDE_PLUGIN_ROOT as a per-session
+    ~/.reflexio/Cu* copy. Installing .venv/node_modules there duplicates the
+    full runtime for every session; smart-install must instead use the stable
+    plugin root recorded in ~/.reflexio/plugin-root.
+    """
+    session_root = tmp_path / ".reflexio" / "Cu123" / "plugin"
+    stable_root = tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.42"
+    fake_bin = tmp_path / "bin"
+    for root in (session_root, stable_root):
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+        shutil.copy2(LIB, scripts / "_lib.sh")
+        shutil.copy2(
+            REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+            scripts / "ensure-plugin-root.sh",
+        )
+        (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+        (root / "uv.lock").write_text("")
+
+    (tmp_path / ".reflexio").mkdir(exist_ok=True)
+    (tmp_path / ".reflexio" / "plugin-root").symlink_to(
+        stable_root,
+        target_is_directory=True,
+    )
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s|%s\\n" "$PWD" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(session_root / "scripts" / "smart-install.sh"),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (session_root / ".venv").exists()
+    assert (stable_root / ".venv" / "bin" / "python").exists()
+    uv_log = (tmp_path / "uv.log").read_text()
+    assert f"{stable_root}|sync --locked --python 3.12 --quiet" in uv_log
+    assert str(session_root) not in uv_log
+
+
 def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> None:
     plugin_root = tmp_path / "plugin"
     scripts = plugin_root / "scripts"
