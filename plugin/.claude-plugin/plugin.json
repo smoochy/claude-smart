@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.42",
+  "version": "0.2.43",
   "description": "Self-improving Claude Code and Codex plugin — turns corrections into durable skills via reflexio",
   "author": {
     "name": "Yi Lu"
