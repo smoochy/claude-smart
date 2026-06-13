@@ -148,10 +148,37 @@ function stablePluginRootForStrayCopy(root) {
   return null;
 }
 
+function cleanupStrayPluginCopy(root) {
+  if (!isReflexioStrayPluginCopy(root)) return;
+  const rootReal = realDir(root);
+  if (!rootReal) return;
+  try {
+    fs.rmSync(rootReal, { recursive: true, force: true });
+    appendLog("backend.log", `[claude-smart] removed stray plugin copy under ~/.reflexio (${rootReal})`);
+  } catch (err) {
+    appendLog("backend.log", `[claude-smart] failed to remove stray plugin copy ${rootReal}: ${err && err.message ? err.message : err}`);
+    return;
+  }
+
+  // Remove now-empty host-created wrapper folders (for example
+  // ~/.reflexio/CUsersAliceRepo/) without touching real Reflexio state dirs.
+  let parent = path.dirname(rootReal);
+  const reflexioReal = realDir(REFLEXIO_DIR);
+  while (reflexioReal && isInsideDir(reflexioReal, parent)) {
+    try {
+      fs.rmdirSync(parent);
+    } catch {
+      break;
+    }
+    parent = path.dirname(parent);
+  }
+}
+
 function stablePluginRoot(root) {
   const stable = stablePluginRootForStrayCopy(root);
   if (stable) {
     appendLog("backend.log", `[claude-smart] redirecting stray plugin copy under ~/.reflexio (${root}) to stable root ${stable}`);
+    cleanupStrayPluginCopy(root);
     return stable;
   }
   return root;

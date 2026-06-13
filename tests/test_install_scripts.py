@@ -2579,7 +2579,8 @@ def test_codex_hook_redirects_reflexio_stray_copy_to_stable_root(
     assert (reflexio / "plugin-root").resolve() == stable_root
     assert json.loads(result.stdout) == {"continue": True}
     assert not (reflexio / "plugin-root").resolve() == stray_root
-    assert "redirecting stray plugin copy" in (
+    assert not stray_root.exists()
+    assert "removed stray plugin copy" in (
         tmp_path / ".claude-smart" / "backend.log"
     ).read_text()
 
