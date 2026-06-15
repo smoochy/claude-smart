@@ -194,7 +194,7 @@ case "$CMD" in
     if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
         echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
-        claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
           bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
           >>"$STATE_DIR/install.log" 2>&1 || true
       fi
@@ -216,7 +216,7 @@ case "$CMD" in
       BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
       if ! claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
         echo "[claude-smart] dashboard: .next missing — starting background build (~1-2 min)" >>"$LOG_FILE"
-        claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >>"$LOG_FILE" 2>&1
+        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >>"$LOG_FILE" 2>&1
       fi
       emit_ok; exit 0
     fi
@@ -231,7 +231,7 @@ case "$CMD" in
     # Caller-side `>>file 2>&1` redirection is honoured before the child
     # detaches, so per-OS log paths stay identical.
     export CLAUDE_SMART_DASHBOARD_WORKSPACE="$WORKSPACE_CWD"
-    claude_smart_spawn_detached "$NPM_BIN" run start >>"$LOG_FILE" 2>&1
+    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "$NPM_BIN" run start >>"$LOG_FILE" 2>&1
     dash_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;

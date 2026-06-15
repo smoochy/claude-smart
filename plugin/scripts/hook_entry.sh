@@ -96,7 +96,7 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
     mkdir -p "$STATE_DIR"
-    claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
       bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
       >>"$STATE_DIR/install.log" 2>&1 || true
   fi
@@ -123,7 +123,7 @@ ensure_hook_package_importable() {
     printf '%s\n' "[claude-smart] hook: claude_smart.hook is not importable; retrying install in background"
     date 2>/dev/null || true
   } >>"$STATE_DIR/install.log" 2>&1
-  claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
     bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
     >>"$STATE_DIR/install.log" 2>&1 || true
 

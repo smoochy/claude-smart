@@ -264,7 +264,7 @@ case "$CMD" in
     if ! command -v uv >/dev/null 2>&1; then
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
         claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; starting installer in background"
-        claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
           bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
           >>"$STATE_DIR/install.log" 2>&1 || true
       fi
