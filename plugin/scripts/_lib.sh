@@ -3,11 +3,53 @@
 # Claude Code hooks run with a minimal non-interactive PATH that often omits
 # nvm/asdf/brew shims where `npm`, `uv`, etc. live. Pull the user's login-shell
 # PATH the same way claude-mem does so hook-spawned scripts find them without
-# the user having to mutate their global PATH. Best-effort — failures silent.
+# the user having to mutate their global PATH. Best-effort and bounded: shell
+# profile startup can be slow or stuck on Windows, so this must never outlive a
+# hook's timeout budget.
+claude_smart_login_path_timeout_seconds() {
+  local _VALUE
+  _VALUE="${CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS:-2}"
+  case "$_VALUE" in
+    ''|*[!0-9]*) printf '%s\n' "2" ;;
+    *) printf '%s\n' "$_VALUE" ;;
+  esac
+}
+
+claude_smart_capture_login_path() {
+  local _TIMEOUT _TMP _PID _WAITED _LINE
+  _TIMEOUT="$(claude_smart_login_path_timeout_seconds)"
+  [ "$_TIMEOUT" -gt 0 ] || return 1
+
+  _TMP="${TMPDIR:-/tmp}/claude-smart-login-path.$$"
+  rm -f "$_TMP" 2>/dev/null || true
+  "$SHELL" -lc 'printf %s "$PATH"' >"$_TMP" 2>/dev/null &
+  _PID=$!
+  _WAITED=0
+  while kill -0 "$_PID" 2>/dev/null; do
+    if [ "$_WAITED" -ge "$_TIMEOUT" ]; then
+      kill "$_PID" 2>/dev/null || true
+      wait "$_PID" 2>/dev/null || true
+      rm -f "$_TMP" 2>/dev/null || true
+      return 1
+    fi
+    sleep 1
+    _WAITED=$((_WAITED + 1))
+  done
+  if wait "$_PID" 2>/dev/null; then
+    while IFS= read -r _LINE || [ -n "$_LINE" ]; do
+      printf '%s' "$_LINE"
+    done <"$_TMP"
+    rm -f "$_TMP" 2>/dev/null || true
+    return 0
+  fi
+  rm -f "$_TMP" 2>/dev/null || true
+  return 1
+}
+
 claude_smart_source_login_path() {
   local _SHELL_PATH
   if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
-    if _SHELL_PATH="$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null)"; then
+    if _SHELL_PATH="$(claude_smart_capture_login_path)"; then
       [ -n "$_SHELL_PATH" ] && export PATH="$_SHELL_PATH:$PATH"
     fi
   fi
@@ -116,30 +158,24 @@ claude_smart_dashboard_unavailable_marker() {
 }
 
 claude_smart_node_recovery_hint() {
-  cat <<'EOF'
-Recovery:
-  1. Restart Claude Code to let claude-smart retry its private Node.js install.
-  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:
-EOF
+  printf '%s\n' \
+    "Recovery:" \
+    "  1. Restart Claude Code to let claude-smart retry its private Node.js install." \
+    "  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:"
   if claude_smart_is_windows; then
-    cat <<'EOF'
-     - winget install OpenJS.NodeJS.LTS
-     - or download the LTS installer from https://nodejs.org/
-EOF
+    printf '%s\n' \
+      "     - winget install OpenJS.NodeJS.LTS" \
+      "     - or download the LTS installer from https://nodejs.org/"
   elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
-    cat <<'EOF'
-     - brew install node
-     - or download the LTS installer from https://nodejs.org/
-EOF
+    printf '%s\n' \
+      "     - brew install node" \
+      "     - or download the LTS installer from https://nodejs.org/"
   else
-    cat <<'EOF'
-     - use your distro package manager for nodejs/npm
-     - or download the LTS archive from https://nodejs.org/
-EOF
+    printf '%s\n' \
+      "     - use your distro package manager for nodejs/npm" \
+      "     - or download the LTS archive from https://nodejs.org/"
   fi
-  cat <<'EOF'
-  3. Run /claude-smart:restart, then /claude-smart:dashboard.
-EOF
+  printf '%s\n' "  3. Run /claude-smart:restart, then /claude-smart:dashboard."
 }
 
 claude_smart_write_dashboard_unavailable() {
@@ -527,14 +563,22 @@ claude_smart_append_capped_log() {
 # POSIX: setsid → python3 os.setsid → nohup (in that order of strength).
 # Windows: nohup alone — Git Bash has no setsid, no process groups, and
 # `os.setsid()` is POSIX-only; nohup ignores SIGHUP which is enough to
-# survive the parent console closing. The python3 fallback is gated on a
-# real-interpreter probe (-V) so the Windows App Execution Alias stub
-# doesn't get invoked. Caller is responsible for redirecting stdout/stderr;
-# we do not impose a log destination here. Stdin is closed so the child
-# cannot inherit a tty. Use `$!` after this call to capture the pid.
+# survive the parent console closing. On Windows, stdout/stderr are also
+# closed here so hook-runner pipes cannot be kept alive by long-lived
+# background children after the hook script exits unless the caller explicitly
+# opts into preserving stdout/stderr for a file redirection. The python3
+# fallback is gated on a real-interpreter probe (-V) so the Windows App
+# Execution Alias stub doesn't get invoked. POSIX callers are responsible for
+# redirecting stdout/stderr; we do not impose a log destination there. Stdin is
+# closed so the child cannot inherit a tty. Use `$!` after this call to capture
+# the pid.
 claude_smart_spawn_detached() {
   if claude_smart_is_windows; then
-    nohup "$@" < /dev/null &
+    if [ "${CLAUDE_SMART_SPAWN_KEEP_OUTPUT:-}" = "1" ]; then
+      nohup "$@" < /dev/null &
+    else
+      nohup "$@" < /dev/null > /dev/null 2>&1 &
+    fi
     return 0
   fi
   if command -v setsid >/dev/null 2>&1; then

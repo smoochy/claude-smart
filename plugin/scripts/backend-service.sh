@@ -20,11 +20,13 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
-claude_smart_source_login_path
+CMD="${1:-start}"
+if [ "$CMD" != "session-end" ]; then
+  claude_smart_source_login_path
+fi
 claude_smart_prepend_astral_bins
 claude_smart_source_reflexio_env
 
-CMD="${1:-start}"
 PORT=8071
 EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
 # Pass through to `reflexio services start/stop` so the spawned backend
@@ -262,7 +264,7 @@ case "$CMD" in
     if ! command -v uv >/dev/null 2>&1; then
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
         claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; starting installer in background"
-        claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
           bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
           >>"$STATE_DIR/install.log" 2>&1 || true
       fi

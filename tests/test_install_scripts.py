@@ -338,6 +338,83 @@ def test_backend_service_pins_reflexio_home_to_user_home() -> None:
     assert 'export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"' in service
 
 
+def test_windows_detached_spawn_closes_hook_output_pipes() -> None:
+    lib = LIB.read_text()
+
+    assert 'nohup "$@" < /dev/null > /dev/null 2>&1 &' in lib
+    assert '[ "${CLAUDE_SMART_SPAWN_KEEP_OUTPUT:-}" = "1" ]' in lib
+    assert 'nohup "$@" < /dev/null &' in lib
+
+
+def test_login_shell_path_lookup_is_bounded(tmp_path: Path) -> None:
+    slow_shell = tmp_path / "slow-shell"
+    slow_shell.write_text("#!/bin/sh\nsleep 5\nprintf '%s' '/too-late/bin'\n")
+    slow_shell.chmod(slow_shell.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["SHELL"] = str(slow_shell)
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "1"
+    env["PATH"] = _minimal_path(tmp_path, "cat", "rm", "sleep")
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_source_login_path; printf "%s" "$PATH"',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=3,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 3
+    assert "/too-late/bin" not in result.stdout
+
+
+def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> None:
+    hook_entry = HOOK_ENTRY.read_text()
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert (
+        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env "
+        "CLAUDE_SMART_BOOTSTRAPPING=1"
+    ) in hook_entry
+    assert (
+        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env "
+        "CLAUDE_SMART_BOOTSTRAPPING=1"
+    ) in backend
+    assert (
+        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env "
+        "CLAUDE_SMART_BOOTSTRAPPING=1"
+    ) in dashboard
+    assert (
+        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
+        '"$NPM_BIN" run start >>"$LOG_FILE" 2>&1'
+        in dashboard
+    )
+
+
+def test_session_end_service_hooks_skip_login_shell_path_lookup() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    session_end_guard = (
+        'CMD="${1:-start}"\n'
+        'if [ "$CMD" != "session-end" ]; then\n'
+        "  claude_smart_source_login_path\n"
+        "fi"
+    )
+    assert session_end_guard in backend
+    assert session_end_guard in dashboard
+
+
 def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
     None
 ):
