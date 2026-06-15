@@ -527,14 +527,16 @@ claude_smart_append_capped_log() {
 # POSIX: setsid → python3 os.setsid → nohup (in that order of strength).
 # Windows: nohup alone — Git Bash has no setsid, no process groups, and
 # `os.setsid()` is POSIX-only; nohup ignores SIGHUP which is enough to
-# survive the parent console closing. The python3 fallback is gated on a
-# real-interpreter probe (-V) so the Windows App Execution Alias stub
-# doesn't get invoked. Caller is responsible for redirecting stdout/stderr;
-# we do not impose a log destination here. Stdin is closed so the child
-# cannot inherit a tty. Use `$!` after this call to capture the pid.
+# survive the parent console closing. On Windows, stdout/stderr are also
+# closed here so hook-runner pipes cannot be kept alive by long-lived
+# background children after the hook script exits. The python3 fallback is
+# gated on a real-interpreter probe (-V) so the Windows App Execution Alias
+# stub doesn't get invoked. POSIX callers are responsible for redirecting
+# stdout/stderr; we do not impose a log destination there. Stdin is closed so
+# the child cannot inherit a tty. Use `$!` after this call to capture the pid.
 claude_smart_spawn_detached() {
   if claude_smart_is_windows; then
-    nohup "$@" < /dev/null &
+    nohup "$@" < /dev/null > /dev/null 2>&1 &
     return 0
   fi
   if command -v setsid >/dev/null 2>&1; then

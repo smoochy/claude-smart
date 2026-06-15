@@ -338,6 +338,20 @@ def test_backend_service_pins_reflexio_home_to_user_home() -> None:
     assert 'export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"' in service
 
 
+def test_windows_detached_spawn_closes_hook_output_pipes() -> None:
+    lib = LIB.read_text()
+
+    assert 'nohup "$@" < /dev/null > /dev/null 2>&1 &' in lib
+
+
+def test_session_end_service_hooks_skip_login_shell_path_lookup() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert 'CMD="${1:-start}"\nif [ "$CMD" != "session-end" ]; then\n  claude_smart_source_login_path\nfi' in backend
+    assert 'CMD="${1:-start}"\nif [ "$CMD" != "session-end" ]; then\n  claude_smart_source_login_path\nfi' in dashboard
+
+
 def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
     None
 ):

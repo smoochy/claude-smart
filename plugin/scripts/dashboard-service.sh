@@ -21,11 +21,13 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
-claude_smart_source_login_path
+CMD="${1:-start}"
+if [ "$CMD" != "session-end" ]; then
+  claude_smart_source_login_path
+fi
 claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
 
-CMD="${1:-start}"
 PORT=3001
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
