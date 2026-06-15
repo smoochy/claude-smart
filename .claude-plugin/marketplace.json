@@ -4,14 +4,14 @@
     "name": "Yi Lu"
   },
   "metadata": {
-    "description": "claude-smart — self-improving Claude Code and Codex plugin via reflexio"
+    "description": "claude-smart — self-improving Claude Code and Codex plugin powered by Reflexio"
   },
   "plugins": [
     {
       "name": "claude-smart",
       "version": "0.2.44",
       "source": "./plugin",
-      "description": "Turns user corrections into project-specific and shared skills via reflexio — uses Claude Code or Codex as the LLM backend (no external API key required)"
+      "description": "Turns corrections into Preferences, Project-specific skills, and Shared skills — uses Claude Code or Codex as the LLM backend (no external API key required)"
     }
   ]
 }
