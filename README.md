@@ -24,6 +24,9 @@
   <a href="#quick-start">
     <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%2B%20Codex-purple.svg" alt="Hosts">
   </a>
+  <a href="https://discord.gg/7fnCxahase">
+    <img src="https://img.shields.io/badge/Discord-Join%20community-5865F2?logo=discord&logoColor=white" alt="Discord">
+  </a>
 </p>
 
 <p align="center">
@@ -232,6 +235,7 @@ See the [LICENSE](LICENSE) file for details.
 
 ## Support
 
+- **Discord**: join the community at [discord.gg/7fnCxahase](https://discord.gg/7fnCxahase).
 - **Issues**: open one on GitHub describing the symptom and include the reflexio backend log (`~/.claude-smart/backend.log`) and the relevant lines of `~/.claude-smart/sessions/{session_id}.jsonl`.
 
 ---
