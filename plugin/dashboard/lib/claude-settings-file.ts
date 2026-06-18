@@ -10,7 +10,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ClaudeCodeHookConfig } from "./types";
+import type { ClaudeCodeHookConfig, OptimizerMode } from "./types";
 
 const ENV_KEY = "CLAUDE_SMART_ENABLE_OPTIMIZER";
 
@@ -52,17 +52,22 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function parseEnabled(value: unknown): boolean {
-  if (value === undefined || value === null || value === "") return true;
-  if (value === false || value === 0) return false;
-  if (typeof value === "string" && value.trim() === "0") return false;
-  return true;
+function parseOptimizerMode(value: unknown): OptimizerMode {
+  if (
+    value === false ||
+    value === 0 ||
+    (typeof value === "string" &&
+      ["0", "false", "no", "off"].includes(value.trim().toLowerCase()))
+  ) {
+    return "disabled";
+  }
+  return "enabled";
 }
 
-function optimizerValue(settings: Record<string, unknown>): boolean | null {
+function optimizerValue(settings: Record<string, unknown>): OptimizerMode | null {
   const env = asRecord(settings.env);
   if (!(ENV_KEY in env)) return null;
-  return parseEnabled(env[ENV_KEY]);
+  return parseOptimizerMode(env[ENV_KEY]);
 }
 
 async function readSettingsFile(file: string): Promise<Record<string, unknown>> {
@@ -84,7 +89,7 @@ export async function readClaudeCodeHookConfig(): Promise<ClaudeCodeHookConfig> 
   ]);
   const localValue = optimizerValue(localSettings);
   const userValue = optimizerValue(userSettings);
-  const effectiveValue = localValue ?? userValue ?? true;
+  const effectiveValue = localValue ?? userValue ?? "auto";
   return {
     CLAUDE_SMART_ENABLE_OPTIMIZER: effectiveValue,
     effectiveValue,
@@ -103,7 +108,12 @@ export async function writeClaudeCodeHookConfig(
   const env = asRecord(settings.env);
 
   if (!("CLAUDE_SMART_ENABLE_OPTIMIZER" in update)) return;
-  env[ENV_KEY] = update.CLAUDE_SMART_ENABLE_OPTIMIZER ? "1" : "0";
+  if (update.CLAUDE_SMART_ENABLE_OPTIMIZER === "auto") {
+    delete env[ENV_KEY];
+  } else {
+    env[ENV_KEY] =
+      update.CLAUDE_SMART_ENABLE_OPTIMIZER === "enabled" ? "1" : "0";
+  }
 
   settings.env = env;
   await fs.mkdir(path.dirname(file), { recursive: true });

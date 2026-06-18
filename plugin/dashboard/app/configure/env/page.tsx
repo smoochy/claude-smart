@@ -6,10 +6,21 @@ import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { SETTINGS_CHANGED_EVENT } from "@/hooks/use-settings";
-import type { ClaudeCodeHookConfig, ClaudeSmartConfig } from "@/lib/types";
+import type {
+  ClaudeCodeHookConfig,
+  ClaudeSmartConfig,
+  OptimizerMode,
+} from "@/lib/types";
 
 export default function ConfigureEnvPage() {
   const [config, setConfig] = useState<ClaudeSmartConfig | null>(null);
@@ -44,14 +55,14 @@ export default function ConfigureEnvPage() {
     setSaved(false);
   };
 
-  const updateOptimizer = (enabled: boolean) => {
+  const updateOptimizer = (mode: OptimizerMode) => {
     setHookConfig((prev) =>
       prev
         ? {
             ...prev,
-            CLAUDE_SMART_ENABLE_OPTIMIZER: enabled,
-            effectiveValue: enabled,
-            localValue: enabled,
+            CLAUDE_SMART_ENABLE_OPTIMIZER: mode,
+            effectiveValue: mode,
+            localValue: mode === "auto" ? null : mode,
           }
         : prev,
     );
@@ -280,15 +291,29 @@ export default function ConfigureEnvPage() {
                     CLAUDE_SMART_ENABLE_OPTIMIZER
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Enable shared skill optimization and rollups during
-                    SessionStart.
+                    Control shared skill optimization and rollups during
+                    SessionStart. Auto applies only to local Reflexio.
                   </p>
                 </div>
-                <Switch
-                  id="enable-optimizer"
-                  checked={!!hookConfig.CLAUDE_SMART_ENABLE_OPTIMIZER}
-                  onCheckedChange={updateOptimizer}
-                />
+                <Select
+                  value={hookConfig.CLAUDE_SMART_ENABLE_OPTIMIZER}
+                  onValueChange={(value) =>
+                    updateOptimizer((value as OptimizerMode) ?? "auto")
+                  }
+                >
+                  <SelectTrigger
+                    id="enable-optimizer"
+                    size="sm"
+                    className="w-40 text-xs bg-background/80"
+                  >
+                    <SelectValue placeholder="Mode" />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="enabled">Enabled</SelectItem>
+                    <SelectItem value="disabled">Disabled</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-muted-foreground space-y-2">
                 <div className="flex items-center justify-between gap-4">
@@ -332,7 +357,8 @@ export default function ConfigureEnvPage() {
   );
 }
 
-function formatSettingValue(value: boolean | null): string {
+function formatSettingValue(value: OptimizerMode | null): string {
   if (value === null) return "Not set";
-  return value ? "Enabled" : "Disabled";
+  if (value === "auto") return "Auto (local only)";
+  return value === "enabled" ? "Enabled" : "Disabled";
 }

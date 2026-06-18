@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from claude_smart import hook
 from claude_smart.reflexio_adapter import Adapter
@@ -41,10 +43,12 @@ def _int_env(name: str, default: int) -> int:
 
 _CLAUDE_SMART_WINDOW_SIZE = _int_env("CLAUDE_SMART_WINDOW_SIZE", 5)
 _CLAUDE_SMART_STRIDE_SIZE = _int_env("CLAUDE_SMART_STRIDE_SIZE", 3)
-# Optimizer is on by default. Set this env var to "0" to skip pushing the
-# claude-smart optimizer defaults on SessionStart (kill switch).
-_DISABLE_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"
+# Optimizer defaults are local-only by default because they store an absolute
+# path to the claude-smart helper process. Set this env var to "1" to force
+# enabling against a non-local Reflexio URL, or "0" to disable everywhere.
+_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"
 _OPTIMIZER_TIMEOUT_SECONDS = 300
+_LOCAL_REFLEXIO_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
 
 
 def _adapter() -> Adapter:
@@ -109,7 +113,7 @@ def handle(payload: dict[str, Any]) -> None:
         window_size=_CLAUDE_SMART_WINDOW_SIZE,
         stride_size=_CLAUDE_SMART_STRIDE_SIZE,
     )
-    if os.environ.get(_DISABLE_OPTIMIZER_ENV) != "0":
+    if _should_apply_optimizer_defaults(adapter):
         adapter.apply_optimizer_defaults(
             script_path=_optimizer_assistant_path(),
             timeout_seconds=_OPTIMIZER_TIMEOUT_SECONDS,
@@ -131,13 +135,28 @@ def handle(payload: dict[str, Any]) -> None:
     )
     sys.stdout.write("\n")
 
-    try:
+    with suppress(Exception):
         adapter.mark_stall_notified()
-    except Exception:  # noqa: BLE001 — telemetry must not break session.
-        pass
 
 
 def _optimizer_assistant_path() -> str:
     executable = Path(sys.executable)
     suffix = ".exe" if os.name == "nt" else ""
     return str(executable.with_name(f"claude-smart-optimizer-assistant{suffix}"))
+
+
+def _should_apply_optimizer_defaults(adapter: Any) -> bool:
+    flag = os.environ.get(_OPTIMIZER_ENV, "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return _is_local_reflexio_url(getattr(adapter, "url", ""))
+
+
+def _is_local_reflexio_url(url: str) -> bool:
+    if not url:
+        return True
+    parsed = urlparse(url)
+    host = parsed.hostname if parsed.scheme else url.split(":", 1)[0]
+    return (host or "").lower() in _LOCAL_REFLEXIO_HOSTS
