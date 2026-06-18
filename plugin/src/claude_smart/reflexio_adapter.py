@@ -6,16 +6,15 @@ Exists so hook handlers (a) don't import reflexio directly at module scope
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
-import inspect
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_smart import env_config
-from claude_smart import runtime
+from claude_smart import env_config, runtime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -174,8 +173,9 @@ class Adapter:
 
         Idempotent compare-then-write: reads ``Config``, only issues a
         ``set_config`` when the server-side values differ from the desired
-        dict below. Called unconditionally from SessionStart; the caller's
-        only escape hatch is ``CLAUDE_SMART_ENABLE_OPTIMIZER=0``.
+        dict below. SessionStart calls this only for local Reflexio URLs by
+        default; ``CLAUDE_SMART_ENABLE_OPTIMIZER=1`` forces hosted URLs, and
+        ``CLAUDE_SMART_ENABLE_OPTIMIZER=0`` disables it everywhere.
         """
         client = self._get_client()
         if client is None:

@@ -124,11 +124,13 @@ export interface ClaudeSmartConfig {
   [extra: string]: string | boolean | undefined;
 }
 
+export type OptimizerMode = "auto" | "enabled" | "disabled";
+
 export interface ClaudeCodeHookConfig {
-  CLAUDE_SMART_ENABLE_OPTIMIZER: boolean;
-  effectiveValue: boolean;
-  localValue: boolean | null;
-  userValue: boolean | null;
+  CLAUDE_SMART_ENABLE_OPTIMIZER: OptimizerMode;
+  effectiveValue: OptimizerMode;
+  localValue: OptimizerMode | null;
+  userValue: OptimizerMode | null;
   settingsPath: string;
   userSettingsPath: string;
 }
