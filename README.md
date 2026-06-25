@@ -225,6 +225,14 @@ For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ---
 
+## Powered by Reflexio
+
+claude-smart is powered by [**Reflexio**](https://reflexio.ai) — the self-improving engine that turns interactions into durable, reusable skills.
+
+> **Building your own agent?** Want the same self-improvement loop — learning from corrections, optimizing proven paths, and growing a skill library — inside *your* product or agent? Get in touch at [**reflexio.ai**](https://reflexio.ai).
+
+---
+
 ## License
 
 This project is licensed under the **Apache License 2.0**. Reflexio is a separate Apache 2.0 project consumed as the `reflexio-ai` Python package. Claude Code is Anthropic's and not covered by this license.
@@ -240,4 +248,4 @@ See the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Built on** [reflexio](https://github.com/ReflexioAI/reflexio) · **Runs on** [Claude Code](https://claude.com/claude-code) and Codex · **Written in** Python 3.12+
+**Powered by** [Reflexio](https://reflexio.ai) · **Runs on** [Claude Code](https://claude.com/claude-code) and Codex · **Written in** Python 3.12+
