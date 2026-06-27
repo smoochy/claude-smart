@@ -77,7 +77,7 @@ def resolve_user_id(cwd: str | os.PathLike[str] | None = None) -> str:
     Honors the ``REFLEXIO_USER_ID`` env var as an explicit override (e.g. so a
     user can point multiple projects at a single Reflexio identity), and
     otherwise falls back to :func:`resolve_project_id`. The env var is
-    loaded from ``~/.reflexio/.env`` before reading the process environment so
+    loaded from ``~/.claude-smart/.env`` before reading the process environment so
     CLI commands and hooks use the same identity resolution.
 
     Args:

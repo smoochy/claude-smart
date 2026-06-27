@@ -108,10 +108,10 @@ install_complete() {
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
   if [ -z "${REFLEXIO_API_KEY:-}" ]; then
-    [ -f "$HOME/.reflexio/.env" ] || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.reflexio/.env" || return 1
+    [ -f "$HOME/.claude-smart/.env" ] || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.claude-smart/.env" || return 1
   fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
@@ -480,10 +480,12 @@ if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
   write_failure "claude-smart package is not importable after vendored Reflexio install in $PLUGIN_ROOT/.venv"
 fi
 
-# Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
-# append our two opt-in flags there so `reflexio services start` picks
-# them up regardless of which directory the user runs it from.
-REFLEXIO_ENV="$HOME/.reflexio/.env"
+# claude-smart's backend loads ~/.claude-smart/.env (backend-service.sh exports
+# REFLEXIO_ENV_FILE so reflexio's CLI reads it instead of ~/.reflexio/.env);
+# append our opt-in flags there so `reflexio services start` picks them up. Keep
+# this path in sync with env_config.REFLEXIO_ENV_PATH and backend-service.sh.
+REFLEXIO_ENV="$HOME/.claude-smart/.env"
+mkdir -p "$(dirname "$REFLEXIO_ENV")"
 claude_smart_env_quote() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }

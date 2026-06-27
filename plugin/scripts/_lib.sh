@@ -87,8 +87,12 @@ claude_smart_env_unquote() {
 }
 
 claude_smart_source_reflexio_env() {
+  # claude-smart's env lives at ~/.claude-smart/.env (kept separate from the OSS
+  # reflexio default ~/.reflexio/.env). Stays in sync with
+  # env_config.REFLEXIO_ENV_PATH and the REFLEXIO_ENV_FILE export in
+  # backend-service.sh.
   local env_file line key value
-  env_file="$HOME/.reflexio/.env"
+  env_file="$HOME/.claude-smart/.env"
   [ -f "$env_file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"

@@ -468,7 +468,7 @@ def test_smart_install_repairs_local_env_defaults() -> None:
 def test_reflexio_env_file_overrides_stale_managed_process_env(
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-file-secret"\n'
@@ -499,7 +499,7 @@ def test_reflexio_env_file_overrides_stale_managed_process_env(
 
 
 def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('CLAUDE_SMART_READ_ONLY="1"\n')
 
@@ -1606,7 +1606,7 @@ def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> No
     assert first.returncode == 0, first.stderr
     assert (tmp_path / ".claude-smart" / "install-complete").exists()
 
-    reflexio_env = tmp_path / ".reflexio" / ".env"
+    reflexio_env = tmp_path / ".claude-smart" / ".env"
     reflexio_env.write_text(
         "# Reflexio template-style env without claude-smart local defaults\n"
         "OPENAI_API_KEY=\n"

@@ -34,6 +34,21 @@ EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
 export BACKEND_PORT="$PORT"
 export EMBEDDING_PORT
 
+# Run claude-smart's backend under its own org id. The reflexio no-auth resolver
+# reads REFLEXIO_DEFAULT_ORG_ID, which scopes the request org -> config file
+# name (config_<org>.json) and SQLite data. Hard-set (not :-defaulted) so a
+# value in the shared ~/.reflexio/.env can't drag claude-smart back onto
+# "self-host-org" and collide with the enterprise self-host backend over
+# config_self-host-org.json. Must stay in sync with cli.py's config path.
+export REFLEXIO_DEFAULT_ORG_ID="claude-smart"
+
+# Load claude-smart's env from ~/.claude-smart/.env instead of the reflexio
+# default ~/.reflexio/.env, so an OSS reflexio backend's .env on this machine
+# can't leak in. The data dir is independent (LOCAL_STORAGE_PATH), so both still
+# share ~/.reflexio/data. Must stay in sync with env_config.REFLEXIO_ENV_PATH and
+# the source path in _lib.sh (claude_smart_source_reflexio_env).
+export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
+
 # Default: route extraction through the active host CLI + ONNX embedder
 # so claude-smart works without any LLM API key. Users can opt out by
 # pre-exporting these to 0.
