@@ -36,8 +36,8 @@ fi
 # symlink tracks the currently loaded plugin.
 FOLLOW="${CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION:-}"
 if [ -z "$FOLLOW" ] && [ -f "$HOME/.claude-smart/.env" ]; then
-    FOLLOW="$(grep -E '^CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=' "$HOME/.claude-smart/.env" \
-        | tail -n1 | cut -d= -f2-)"
+    FOLLOW="$(grep -E '^(export[[:space:]]+)?CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=' "$HOME/.claude-smart/.env" \
+        | tail -n1 | sed -E 's/^(export[[:space:]]+)?CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=//')"
     # Strip a single pair of surrounding double or single quotes, if present.
     FOLLOW="${FOLLOW#\"}"; FOLLOW="${FOLLOW%\"}"
     FOLLOW="${FOLLOW#\'}"; FOLLOW="${FOLLOW%\'}"
