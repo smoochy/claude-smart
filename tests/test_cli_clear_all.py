@@ -21,7 +21,7 @@ def clear_all_harness(monkeypatch, tmp_path):
     """Isolate clear-all paths and service calls from the real user machine."""
     reflexio_dir = tmp_path / "reflexio"
     env_path = reflexio_dir / ".env"
-    config_path = reflexio_dir / "configs" / "config_self-host-org.json"
+    config_path = reflexio_dir / "configs" / "config_claude-smart.json"
     plugin_root = tmp_path / "plugin"
     backend_script = plugin_root / "scripts" / "backend-service.sh"
     backend_script.parent.mkdir(parents=True)
