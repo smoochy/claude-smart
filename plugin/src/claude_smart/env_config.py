@@ -1,11 +1,19 @@
-"""Shared ``~/.reflexio/.env`` helpers for claude-smart."""
+"""Shared ``~/.claude-smart/.env`` helpers for claude-smart.
+
+claude-smart keeps its env under ``~/.claude-smart`` (not ``~/.reflexio``) so an
+OSS reflexio backend sharing this machine never leaks its ``.env`` into
+claude-smart. The data directory stays shared at ``~/.reflexio/data``. This path
+must stay in sync with the ``REFLEXIO_ENV_FILE`` export in
+``scripts/backend-service.sh`` and the source path in
+``scripts/_lib.sh`` (``claude_smart_source_reflexio_env``).
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
+REFLEXIO_ENV_PATH = Path.home() / ".claude-smart" / ".env"
 MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
@@ -60,7 +68,7 @@ def parse_env_line(line: str) -> tuple[str, str] | None:
 
 
 def load_reflexio_env(path: Path | None = None) -> None:
-    """Load ``~/.reflexio/.env`` into ``os.environ`` without overriding values."""
+    """Load ``~/.claude-smart/.env`` into ``os.environ`` without overriding values."""
     path = path or REFLEXIO_ENV_PATH
     try:
         text = path.read_text()
@@ -111,7 +119,7 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
 
 
 def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
-    """Create or augment ``~/.reflexio/.env`` for claude-smart local mode.
+    """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
     Existing active assignments win. This repairs first installs and deleted
     env files without clobbering explicit user overrides such as

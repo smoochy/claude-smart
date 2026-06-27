@@ -3,7 +3,7 @@
 Exposes the following subcommands:
 
 - ``install``: register the GitHub marketplace and install the plugin into
-  Claude Code, then seed ``~/.reflexio/.env`` with the local-provider flags.
+  Claude Code, then seed ``~/.claude-smart/.env`` with the local-provider flags.
 - ``update``: update the plugin to the latest version via the native Claude
   Code plugin CLI.
 - ``uninstall``: remove the plugin from Claude Code via the native plugin
@@ -1078,7 +1078,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     Runs ``claude plugin marketplace add`` (pointed at the bundled marketplace
     at ``_REPO_ROOT``) followed by ``claude plugin install``, then appends the
-    local-provider flags to ``~/.reflexio/.env`` so reflexio can route
+    local-provider flags to ``~/.claude-smart/.env`` so reflexio can route
     generation through the local Claude Code CLI.
 
     Args:
