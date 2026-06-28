@@ -23,7 +23,7 @@
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                  .claude-plugin/marketplace.json README.md
-LOCK_FILES    := plugin/uv.lock reflexio.lock.json
+LOCK_FILES    := package-lock.json plugin/uv.lock reflexio.lock.json
 PYPROJECT     := plugin/pyproject.toml
 
 help:
@@ -93,6 +93,7 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
 	    .claude-plugin/marketplace.json
 	@sed -i.bak -E 's/^version = "[^"]+"/version = "$(VERSION)"/' plugin/pyproject.toml
+	@python3 -c 'import json, pathlib; p=pathlib.Path("package-lock.json"); data=json.loads(p.read_text()); data["version"]="$(VERSION)"; data["packages"][""]["version"]="$(VERSION)"; p.write_text(json.dumps(data, indent=2) + "\n")'
 	@sed -i.bak -E 's|badge/version-[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?-green\.svg|badge/version-$(VERSION)-green.svg|' README.md
 	@rm -f package.json.bak plugin/pyproject.toml.bak \
 	       plugin/.claude-plugin/plugin.json.bak plugin/.codex-plugin/plugin.json.bak \
@@ -116,6 +117,7 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 
 publish-npm: check-vendor-reflexio check-locked-project-version ## Publish the current version to npm
 	@echo "→ npm publish"
+	npm run build:opencode
 	npm publish --access public
 
 publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publish the current version to PyPI
@@ -126,6 +128,7 @@ publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publis
 
 publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
+	@npm run build:opencode
 	@npm publish --dry-run
 	@echo ""
 	@echo "→ uv build (dry: inspect plugin/dist/ manually)"
@@ -135,6 +138,7 @@ publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version 
 
 package: check-vendor-reflexio check-locked-project-version ## Build the npm tarball locally without publishing
 	@echo "→ npm pack"
+	@npm run build:opencode
 	@tarball=$$(npm pack 2>/dev/null | tail -1); \
 	  abs=$$(cd "$$(dirname "$$tarball")" && pwd)/$$(basename "$$tarball"); \
 	  echo ""; \
@@ -143,8 +147,10 @@ package: check-vendor-reflexio check-locked-project-version ## Build the npm tar
 	  echo "Install locally with one of:"; \
 	  echo "  npm install -g $$abs && claude-smart install"; \
 	  echo "  npm install -g $$abs && claude-smart install --host codex"; \
+	  echo "  npm install -g $$abs && claude-smart install --host opencode"; \
 	  echo "  npx --package=$$abs -- claude-smart install"; \
-	  echo "  npx --package=$$abs -- claude-smart install --host codex"
+	  echo "  npx --package=$$abs -- claude-smart install --host codex"; \
+	  echo "  npx --package=$$abs -- claude-smart install --host opencode"
 
 publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
 
