@@ -6,11 +6,29 @@ import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { ReflexioConfig } from "@/lib/types";
+import { Switch } from "@/components/ui/switch";
+import type { ReflexioConfig, ReflexioRetrievalFloorConfig } from "@/lib/types";
 
 type ExtractorField =
   | "profile_extractor_configs"
   | "user_playbook_extractor_configs";
+
+const DEFAULT_RETRIEVAL_FLOOR: Required<
+  Pick<
+    ReflexioRetrievalFloorConfig,
+    | "enabled"
+    | "pool_size"
+    | "profile_floor"
+    | "user_playbook_floor"
+    | "agent_playbook_floor"
+  >
+> = {
+  enabled: false,
+  pool_size: 30,
+  profile_floor: -3,
+  user_playbook_floor: -3,
+  agent_playbook_floor: -3,
+};
 
 export default function ConfigureServerPage() {
   const [srvConfig, setSrvConfig] = useState<ReflexioConfig | null>(null);
@@ -70,6 +88,22 @@ export default function ConfigureServerPage() {
       next[0] = { ...next[0], extraction_definition_prompt: v };
       return { ...prev, [field]: next };
     });
+    setSrvSaved(false);
+  };
+
+  const updateReranker = (enabled: boolean) => {
+    setSrvConfig((prev) =>
+      prev
+        ? {
+            ...prev,
+            retrieval_floor: {
+              ...DEFAULT_RETRIEVAL_FLOOR,
+              ...(prev.retrieval_floor ?? {}),
+              enabled,
+            },
+          }
+        : prev,
+    );
     setSrvSaved(false);
   };
 
@@ -188,6 +222,22 @@ export default function ConfigureServerPage() {
                 }}
                 className="font-mono text-xs bg-background/80"
                 placeholder="5"
+              />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-background/60 p-3">
+              <div className="min-w-0">
+                <Label htmlFor="search-reranker">Search reranker</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Use the local cross-encoder relevance floor for injected
+                  memory search. The first enabled search loads the model into
+                  the backend process.
+                </p>
+              </div>
+              <Switch
+                id="search-reranker"
+                checked={!!srvConfig.retrieval_floor?.enabled}
+                onCheckedChange={updateReranker}
               />
             </div>
 

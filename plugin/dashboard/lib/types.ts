@@ -140,10 +140,20 @@ export interface ReflexioExtractorConfig {
   [k: string]: unknown;
 }
 
+export interface ReflexioRetrievalFloorConfig {
+  enabled?: boolean;
+  pool_size?: number;
+  profile_floor?: number;
+  user_playbook_floor?: number;
+  agent_playbook_floor?: number;
+  [k: string]: unknown;
+}
+
 export interface ReflexioConfig {
   agent_context_prompt?: string | null;
   window_size?: number;
   stride_size?: number;
+  retrieval_floor?: ReflexioRetrievalFloorConfig | null;
   profile_extractor_configs?: ReflexioExtractorConfig[] | null;
   user_playbook_extractor_configs?: ReflexioExtractorConfig[] | null;
   [k: string]: unknown;
