@@ -93,6 +93,22 @@ export const reflexio = {
     return get(`get_all_profiles?${qs.toString()}`);
   },
 
+  async getProfileById(
+    profileId: string,
+    opts: { includeTombstones?: boolean } = {},
+  ): Promise<UserProfile | null> {
+    const qs = new URLSearchParams();
+    qs.set("profile_id", profileId);
+    if (opts.includeTombstones) qs.set("include_tombstones", "true");
+    const res = await get<{ user_profiles: UserProfile[] }>(
+      `get_all_profiles?${qs.toString()}`,
+    );
+    return (
+      res.user_profiles?.find((profile) => profile.profile_id === profileId) ??
+      null
+    );
+  },
+
   /** GET /api/get_all_interactions — global, unfiltered. */
   async getAllInteractions(
     opts: { limit?: number } = {},

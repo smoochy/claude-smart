@@ -9,11 +9,11 @@ export type UserActionType =
 // (response_model_exclude_none strips it from the JSON entirely), so the type
 // only enumerates the non-null values. The values are lowercase because they
 // come from Python's Status StrEnum.
-export type LifecycleStatus = "pending" | "archived";
+export type LifecycleStatus = "pending" | "archived" | "merged" | "superseded";
 
 export type AgentPlaybookStatus = "pending" | "approved" | "rejected";
 
-export type ProfileStatus = "pending" | "archived";
+export type ProfileStatus = "pending" | "archived" | "merged" | "superseded";
 
 export interface ToolUsed {
   tool_name: string;

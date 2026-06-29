@@ -28,6 +28,7 @@ import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
+import type { StatusLabel } from "@/lib/status";
 import type { UserPlaybook } from "@/lib/types";
 
 type FormState = { content: string; trigger: string; rationale: string };
@@ -464,12 +465,12 @@ function AutoTextarea({
 function StatusBadge({
   status,
 }: {
-  status: "CURRENT" | "ARCHIVED" | "PENDING";
+  status: StatusLabel;
 }) {
   const variant =
     status === "CURRENT"
       ? "secondary"
-      : status === "ARCHIVED"
+      : status === "ARCHIVED" || status === "MERGED" || status === "SUPERSEDED"
         ? "outline"
         : "default";
   return (
@@ -479,7 +480,10 @@ function StatusBadge({
           "h-1.5 w-1.5 rounded-full",
           status === "CURRENT" && "bg-emerald-500",
           status === "PENDING" && "bg-amber-500",
-          status === "ARCHIVED" && "bg-muted-foreground",
+          (status === "ARCHIVED" ||
+            status === "MERGED" ||
+            status === "SUPERSEDED") &&
+            "bg-muted-foreground",
         )}
       />
       {status}
