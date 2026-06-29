@@ -35,6 +35,7 @@ import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { agentPlaybookStatusLabel, statusLabel } from "@/lib/status";
+import type { StatusLabel } from "@/lib/status";
 import type { AgentPlaybook, AgentPlaybookStatus } from "@/lib/types";
 
 type FormState = {
@@ -571,12 +572,15 @@ function AutoTextarea({
 function StatusBadge({
   status,
 }: {
-  status: "CURRENT" | "ARCHIVED" | "PENDING" | "APPROVED" | "REJECTED";
+  status: StatusLabel | "APPROVED" | "REJECTED";
 }) {
   const variant =
     status === "CURRENT" || status === "APPROVED"
       ? "secondary"
-      : status === "ARCHIVED" || status === "REJECTED"
+      : status === "ARCHIVED" ||
+          status === "MERGED" ||
+          status === "SUPERSEDED" ||
+          status === "REJECTED"
         ? "outline"
         : "default";
   return (
@@ -588,7 +592,10 @@ function StatusBadge({
           status === "APPROVED" && "bg-emerald-500",
           status === "PENDING" && "bg-amber-500",
           status === "REJECTED" && "bg-destructive",
-          status === "ARCHIVED" && "bg-muted-foreground",
+          (status === "ARCHIVED" ||
+            status === "MERGED" ||
+            status === "SUPERSEDED") &&
+            "bg-muted-foreground",
         )}
       />
       {status}

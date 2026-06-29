@@ -53,12 +53,9 @@ export default function PreferenceDetailPage({
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getAllProfiles({ limit: 500 })
-      .then((res) => {
+      .getProfileById(id, { includeTombstones: true })
+      .then((found) => {
         if (cancelled) return;
-        const found = (res.user_profiles ?? []).find(
-          (p) => p.profile_id === id,
-        );
         if (!found) {
           setNotFound(true);
           return;
@@ -397,12 +394,12 @@ function Prose({ text }: { text: string }) {
 function StatusBadge({
   status,
 }: {
-  status: "CURRENT" | "ARCHIVED" | "PENDING";
+  status: "CURRENT" | "ARCHIVED" | "PENDING" | "MERGED" | "SUPERSEDED";
 }) {
   const variant =
     status === "CURRENT"
       ? "secondary"
-      : status === "ARCHIVED"
+      : status === "ARCHIVED" || status === "MERGED" || status === "SUPERSEDED"
         ? "outline"
         : "default";
   return (
@@ -412,7 +409,10 @@ function StatusBadge({
           "h-1.5 w-1.5 rounded-full",
           status === "CURRENT" && "bg-emerald-500",
           status === "PENDING" && "bg-amber-500",
-          status === "ARCHIVED" && "bg-muted-foreground",
+          (status === "ARCHIVED" ||
+            status === "MERGED" ||
+            status === "SUPERSEDED") &&
+            "bg-muted-foreground",
         )}
       />
       {status}
