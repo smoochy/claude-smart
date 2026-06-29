@@ -1,8 +1,8 @@
 # claude-smart
 
-Self-improving [Claude Code](https://claude.com/claude-code) and Codex plugin — turns corrections and successful workflows into durable Preferences, Project-specific skills, and Shared skills that future sessions follow, via [reflexio](https://github.com/ReflexioAI/reflexio).
+Self-improving [Claude Code](https://claude.com/claude-code), Codex, and OpenCode plugin — turns corrections and successful workflows into durable Preferences, Project-specific skills, and Shared skills that future sessions follow, via [reflexio](https://github.com/ReflexioAI/reflexio).
 
-This directory is the published Python package (`claude-smart` on PyPI) and the Claude Code/Codex plugin payload shipped through the marketplace. For the project overview, install instructions, benchmarks, and feature walkthrough, see the [top-level README](https://github.com/ReflexioAI/claude-smart#readme).
+This directory is the published Python package (`claude-smart` on PyPI) and the Claude Code/Codex/OpenCode plugin payload shipped through the marketplace and npm. For the project overview, install instructions, benchmarks, and feature walkthrough, see the [top-level README](https://github.com/ReflexioAI/claude-smart#readme).
 
 ## Install
 
@@ -36,6 +36,17 @@ npx claude-smart install --host codex
 Then fully quit and reopen Codex so hooks reload. Codex installs reuse the same
 local Preferences, Project-specific skills, and Shared skills as Claude Code.
 
+### OpenCode
+
+```bash
+npx claude-smart install --host opencode
+```
+
+Then restart OpenCode in your project so it loads the plugin from `opencode.json`
+or your existing `.opencode/opencode.json*` config. OpenCode installs reuse the
+same local Preferences, Project-specific skills, and Shared skills as Claude Code
+and Codex.
+
 ## Uninstall
 
 ### Claude Code
@@ -58,6 +69,15 @@ npx claude-smart uninstall --host codex
 
 Restart Codex after uninstalling. Local data under `~/.reflexio/` and
 `~/.claude-smart/` is left in place for both hosts — remove manually if desired.
+
+### OpenCode
+
+```bash
+npx claude-smart uninstall --host opencode
+```
+
+Restart OpenCode after uninstalling. Local data under `~/.reflexio/` and
+`~/.claude-smart/` is preserved and shared across supported hosts.
 
 ## License
 
