@@ -36,6 +36,26 @@ export default function RootLayout({
               {children}
             </main>
           </div>
+          <footer className="shrink-0 border-t border-border bg-card/60 px-4 py-2 text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+            <span>Powered by</span>
+            <a
+              href="https://github.com/ReflexioAI/reflexio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium hover:text-foreground underline-offset-2 hover:underline"
+            >
+              reflexio
+            </a>
+            <span aria-hidden>·</span>
+            <a
+              href="https://github.com/ReflexioAI/reflexio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-foreground underline-offset-2 hover:underline"
+            >
+              ⭐ Star on GitHub
+            </a>
+          </footer>
         </Providers>
       </body>
     </html>
