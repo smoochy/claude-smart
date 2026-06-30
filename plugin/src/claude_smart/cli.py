@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_smart import context_format, env_config, ids, publish, state
+from claude_smart import context_format, cs_cite, env_config, ids, publish, state
 from claude_smart.reflexio_adapter import Adapter
 
 _REFLEXIO_ENV_PATH = env_config.REFLEXIO_ENV_PATH
@@ -1572,10 +1572,24 @@ def cmd_show(args: argparse.Namespace) -> int:
             f"First error: {adapter.read_errors[0]}\n"
         )
         return 1
-    sys.stdout.write(
-        md or f"_No skills or preferences yet for project `{project_id}`._\n"
-    )
+    body = md or f"_No skills or preferences yet for project `{project_id}`._\n"
+    sys.stdout.write(body + _reflexio_show_footer())
     return 0
+
+
+def _reflexio_show_footer() -> str:
+    """Return the markdown attribution footer appended to ``show`` output.
+
+    Reinforces that claude-smart is powered by the open-source reflexio engine
+    and nudges users to star the repo.
+
+    Returns:
+        str: A leading-separator markdown footer ending in a newline.
+    """
+    return (
+        f"\n---\n⭐ claude-smart is powered by [reflexio]({cs_cite.REFLEXIO_REPO_URL})"
+        f" — if it helps you, [star it on GitHub]({cs_cite.REFLEXIO_REPO_URL}).\n"
+    )
 
 
 def cmd_learn(args: argparse.Namespace) -> int:

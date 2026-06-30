@@ -54,3 +54,6 @@ benchmarks/memory_comparison/results
 # Local design docs / brainstorm specs (kept out of public repo)
 docs/superpowers/
 marketing/
+
+# temp tarball artifact
+*.tgz

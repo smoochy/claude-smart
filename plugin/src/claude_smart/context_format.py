@@ -269,7 +269,7 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     gate = cs_cite.WHEN_TO_CITE_COMPACT
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+        marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
         separator_instruction = (
             " Separate multiple linked memories with the visible ` | ` separator."
             if len(marker_parts) > 1
@@ -281,12 +281,13 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         )
     if link_style == "osc8":
         return _remoteize_citation_instruction(
-            f"{gate} If you do, end with `✨ claude-smart rule applied:` "
-            "followed by the same linked memory text; keep the link, but do "
-            "not show the URL."
+            f"{gate} If you do, end with `{cs_cite.MARKER_PREFIX}` "
+            "followed by the same linked memory text, then "
+            f"`{cs_cite.marker_attribution('osc8')}` linking to the reflexio "
+            "repo; keep the links, but do not show the URL."
         )
     if marker_parts:
-        marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+        marker = cs_cite.build_marker(" | ".join(marker_parts), "markdown")
         separator_instruction = (
             " Separate multiple linked memories with the visible ` | ` separator."
             if len(marker_parts) > 1
@@ -297,9 +298,8 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             f"links: `{marker}`.{separator_instruction}"
         )
     return _remoteize_citation_instruction(
-        f"{gate} If you do, end with one final marker like `✨ claude-smart "
-        "rule applied: [verify process state](http://localhost:3001/rules/"
-        "s1-123)` using the shown rule URL."
+        f"{gate} If you do, end with one final marker like "
+        f"`{cs_cite.MARKDOWN_EXAMPLE_ONE}` using the shown rule URL."
     )
 
 
@@ -337,7 +337,7 @@ def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
     if not marker_parts:
         return ""
 
-    marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+    marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
     return (
         "If any listed memory above was used, copy this exact final marker, "
         f"preserving its hidden OSC 8 terminal links: `{marker}`. "

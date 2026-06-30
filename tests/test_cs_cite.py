@@ -87,6 +87,31 @@ def test_parse_text_citations_accepts_managed_reflexio_item_links() -> None:
     ]
 
 
+def test_parse_text_citations_ignores_reflexio_repo_attribution() -> None:
+    """The trailing ` · ⚡Reflexio` repo link must not be counted as a citation."""
+    text = "Done.\n\n" + cs_cite.build_marker(
+        "[git safety](http://localhost:3001/rules/s1-7536)", "markdown"
+    )
+    assert cs_cite.REFLEXIO_REPO_URL in text
+    assert cs_cite.parse_text_citations(text) == ["s1-7536"]
+
+
+def test_parse_text_citations_ignores_reflexio_repo_attribution_osc8() -> None:
+    osc8_link = (
+        "\x1b]8;;http://localhost:3001/rules/s1-7536\x1b\\git safety\x1b]8;;\x1b\\"
+    )
+    text = "Done.\n\n" + cs_cite.build_marker(osc8_link, "osc8")
+    assert cs_cite.REFLEXIO_REPO_URL in text
+    assert cs_cite.parse_text_citations(text) == ["s1-7536"]
+
+
+def test_marker_attribution_unknown_link_style_falls_back_to_markdown() -> None:
+    """Unknown link styles must render the markdown attribution, not raise."""
+    markdown = cs_cite.marker_attribution("markdown")
+    assert cs_cite.marker_attribution("totally-unknown") == markdown
+    assert markdown == f" · [⚡Reflexio]({cs_cite.REFLEXIO_REPO_URL})"
+
+
 def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
     text = (
         "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
@@ -180,6 +205,8 @@ def test_citation_instruction_on_returns_compact_string() -> None:
     assert "citation block is up to two lines" not in text
     assert "counterfactual" in text.lower()
     assert "✨ claude-smart rule applied:" in text
+    assert "⚡Reflexio" in text
+    assert cs_cite.REFLEXIO_REPO_URL in text
     assert "Never use the old" in text
     assert "✨ 1 claude-smart learning applied [cs:...]" in text
 
@@ -200,6 +227,8 @@ def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
     assert "visible ` | ` separator" in text
     assert "materially and meaningfully changed your response" in text
     assert "markdown links" in text
+    assert "⚡Reflexio" in text
+    assert cs_cite.REFLEXIO_REPO_URL in text
 
 
 def test_citation_instruction_off_returns_empty_string() -> None:

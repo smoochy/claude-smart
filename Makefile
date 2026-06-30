@@ -18,7 +18,7 @@
 .PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry package \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         check-vendor-reflexio check-pypi-compatible-reflexio \
-        check-locked-project-version unskip-worktree
+        check-locked-project-version check-standalone-lock relock unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -87,6 +87,12 @@ check-locked-project-version: ## Verify plugin/uv.lock claude-smart version matc
 	  fi; \
 	  echo "→ ok: plugin/uv.lock claude-smart matches $(PYPROJECT) ($$manifest)"
 
+check-standalone-lock: ## Verify plugin/uv.lock resolves cleanly OUTSIDE the enterprise uv workspace (what end users hit)
+	@bash scripts/standalone-lock.sh --check
+
+relock: unskip-worktree ## Regenerate plugin/uv.lock as a standalone lockfile (reflexio-ai from PyPI)
+	@bash scripts/standalone-lock.sh --write
+
 bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	@echo "→ bumping to $(VERSION)"
 	@sed -i.bak -E 's/"version": "[^"]+"/"version": "$(VERSION)"/' \
@@ -98,24 +104,18 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	@rm -f package.json.bak plugin/pyproject.toml.bak \
 	       plugin/.claude-plugin/plugin.json.bak plugin/.codex-plugin/plugin.json.bak \
 	       .claude-plugin/marketplace.json.bak README.md.bak
-	@echo "→ refreshing uv lockfile (resolves reflexio-ai from PyPI)"
-	@uv lock --refresh-package reflexio-ai --project plugin
-	@# Force-sync the workspace project's own version in plugin/uv.lock.
-	@# uv does NOT re-lock the editable project's version on a plain `uv lock`
-	@# (and silently no-ops --refresh-package <project>), and when this tree is
-	@# absorbed into a parent uv workspace, `uv lock --project plugin` writes to
-	@# the parent's lockfile rather than plugin/uv.lock at all. Either path
-	@# leaves plugin/uv.lock pinned to the old version, which makes
-	@# `uv sync --locked` silently drop the project from the install set on
-	@# end-user machines (see v0.2.38 incident).
-	@awk -v new='$(VERSION)' '\
-	  /^name = "claude-smart"$$/{f=1; print; next} \
-	  f && /^version = /{sub(/"[^"]+"/, "\"" new "\""); f=0} \
-	  {print}' plugin/uv.lock > plugin/uv.lock.tmp && mv plugin/uv.lock.tmp plugin/uv.lock
+	@echo "→ regenerating standalone plugin/uv.lock (resolves reflexio-ai from PyPI)"
+	@# plugin/ is a member of the enterprise uv workspace, so `uv lock --project
+	@# plugin` writes the PARENT lockfile and leaves plugin/uv.lock's dependency
+	@# graph stale (only its version was awk-patched), which makes end-user
+	@# `uv sync --locked` fail standalone (see v0.2.38 + lock-drift incidents).
+	@# Regenerate it outside the workspace instead; the version comes from the
+	@# already-bumped plugin/pyproject.toml. check-standalone-lock guards this.
+	@bash scripts/standalone-lock.sh --write
 	@echo "→ resulting versions:"
 	@grep -HE '("version"|^version)' $(VERSION_FILES)
 
-publish-npm: check-vendor-reflexio check-locked-project-version ## Publish the current version to npm
+publish-npm: check-vendor-reflexio check-locked-project-version check-standalone-lock ## Publish the current version to npm
 	@echo "→ npm publish"
 	npm run build:opencode
 	npm publish --access public
@@ -126,7 +126,7 @@ publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publis
 	uv build --project plugin --out-dir plugin/dist
 	uv publish --project plugin plugin/dist/*
 
-publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
+publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version check-standalone-lock ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm run build:opencode
 	@npm publish --dry-run
@@ -136,7 +136,7 @@ publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version 
 	uv build --project plugin
 	@ls -la plugin/dist/
 
-package: check-vendor-reflexio check-locked-project-version ## Build the npm tarball locally without publishing
+package: check-vendor-reflexio check-locked-project-version check-standalone-lock ## Build the npm tarball locally without publishing
 	@echo "→ npm pack"
 	@npm run build:opencode
 	@tarball=$$(npm pack 2>/dev/null | tail -1); \

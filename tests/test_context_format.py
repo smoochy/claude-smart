@@ -111,6 +111,7 @@ def test_render_with_registry_emits_citation_instruction() -> None:
     assert "Do not call a shell command" not in md
     assert "✨ claude-smart rule applied: [verify process state]" in md
     assert "[brief answer preference]" in md
+    assert "[⚡Reflexio](https://github.com/ReflexioAI/reflexio)" in md
     assert "Never emit a standalone wrapper" not in md
     assert "`✨ N claude-smart" not in md
 
@@ -241,6 +242,10 @@ def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) ->
         "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
         "prefers concise answers"
         "\x1b]8;;\x1b\\"
+    ) in md
+    # Reflexio attribution rides along as an OSC 8 terminal link to the repo.
+    assert (
+        " · \x1b]8;;https://github.com/ReflexioAI/reflexio\x1b\\⚡Reflexio\x1b]8;;\x1b\\"
     ) in md
 
 

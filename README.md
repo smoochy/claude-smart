@@ -27,6 +27,9 @@
   <a href="https://discord.gg/7fnCxahase">
     <img src="https://img.shields.io/badge/Discord-Join%20community-5865F2?logo=discord&logoColor=white" alt="Discord">
   </a>
+  <a href="https://github.com/ReflexioAI/reflexio">
+    <img src="https://img.shields.io/github/stars/ReflexioAI/reflexio?style=flat&logo=github&label=Star%20reflexio&color=yellow" alt="Star reflexio on GitHub">
+  </a>
 </p>
 
 <p align="center">
@@ -45,6 +48,10 @@
 
 <p align="center">
   <b>vs <code>claude-mem</code>:</b> ~3× better at turning your corrections into rules Claude follows, ~50% more of your guidance is retained. <a href="EXPERIMENT.md"><b>Read the benchmark →</b></a>
+</p>
+
+<p align="center">
+  ⭐ Built on the open-source <a href="https://github.com/ReflexioAI/reflexio"><b>reflexio</b></a> engine — if claude-smart helps you, <a href="https://github.com/ReflexioAI/reflexio"><b>star reflexio on GitHub</b></a>.
 </p>
 
 ---
@@ -246,7 +253,7 @@ For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ## Powered by Reflexio
 
-claude-smart is powered by [**Reflexio**](https://reflexio.ai) — the self-improving engine that turns interactions into durable, reusable skills.
+claude-smart is powered by [**Reflexio**](https://github.com/ReflexioAI/reflexio) ([reflexio.ai](https://reflexio.ai)) — the open-source self-improving engine that turns interactions into durable, reusable skills. If claude-smart is useful to you, **[⭐ star reflexio on GitHub](https://github.com/ReflexioAI/reflexio)**.
 
 ---
 
@@ -265,4 +272,4 @@ See the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Powered by** [Reflexio](https://reflexio.ai) · **Runs on** [Claude Code](https://claude.com/claude-code), Codex, and OpenCode · **Written in** Python 3.12+
+**Powered by** [Reflexio](https://github.com/ReflexioAI/reflexio) · **Runs on** [Claude Code](https://claude.com/claude-code), Codex, and OpenCode · **Written in** Python 3.12+
