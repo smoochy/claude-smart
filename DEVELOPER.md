@@ -143,14 +143,21 @@ dynamic-param types, consult `plugin/dashboard/node_modules/next/dist/docs/`.
 
 ## Versioning
 
-`claude-smart` uses [semver](https://semver.org/). Four files carry the version and **must stay in lockstep** — if they drift, the npm wrapper, PyPI wheel, plugin metadata, and marketplace entry can claim different versions, and users see confusing mismatches in `claude plugin list` vs. `npm view claude-smart version`.
+`claude-smart` uses [semver](https://semver.org/). Release metadata must stay
+in lockstep — if it drifts, the npm wrapper, PyPI wheel, plugin metadata, and
+marketplace entry can claim different versions, and users see confusing
+mismatches in `claude plugin list` vs. `npm view claude-smart version`.
 
 | File | Field |
 | --- | --- |
 | `package.json` | `.version` |
 | `plugin/pyproject.toml` | `project.version` |
 | `plugin/.claude-plugin/plugin.json` | `.version` |
+| `plugin/.codex-plugin/plugin.json` | `.version` |
 | `.claude-plugin/marketplace.json` | `.plugins[0].version` |
+| `package-lock.json` | root package version |
+| `plugin/uv.lock` | `claude-smart` package version |
+| `README.md` | version badge |
 
 Don't edit these by hand — use `make bump`.
 
@@ -166,37 +173,98 @@ Don't edit these by hand — use `make bump`.
    Persist it in your shell rc if you release frequently.
 3. **git**: push access to `origin` for the tag push at the end of `make release`.
 
-### Every release
+### Path A: release claude-smart only
+
+Use this path when the claude-smart changes work with the already-pinned
+`reflexio-ai` dependency. Do not run `scripts/release-with-reflexio.sh` for this
+path.
 
 ```bash
 # 1. Make sure you're on a clean main (no staged/unstaged edits).
 git checkout main
 git pull --ff-only
 
-# 2. Dry-run to confirm what will ship (optional but cheap).
+# 2. Dry-run to confirm what will ship.
 make publish-dry
 #   → npm: tarball includes bin/, .agents/plugins/marketplace.json, plugin/, LICENSE, README.md, package.json
 #   → PyPI: dist/ contains a wheel + sdist
 
-# 3. One-shot release. Bumps, commits, tags v$VERSION, publishes to both
-#    registries, pushes the commit and tag.
-make release VERSION=0.1.1
+# 3. Bump, commit, tag, publish npm + PyPI, then push commit + tag.
+make release VERSION=<new-claude-smart-version>
 ```
 
-`make release` runs these steps in order and aborts on the first failure:
+### Path B: release claude-smart with a published Reflexio update
+
+Use this path when claude-smart needs a newer `reflexio-ai` version and that
+Reflexio version should be a normal PyPI dependency. The Reflexio package must
+be released first; `release-with-reflexio.sh` only syncs claude-smart to that
+already-published release.
+
+```bash
+# 1. Release Reflexio from the Reflexio repo.
+cd ../reflexio
+git checkout main
+git pull --ff-only
+make release VERSION=<new-reflexio-version>
+
+# 2. Sync claude-smart to the published Reflexio release.
+cd ../claude-smart
+git checkout main
+git pull --ff-only
+REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh
+
+# 3. Release claude-smart.
+make release VERSION=<new-claude-smart-version>
+```
+
+In step 2, `release-with-reflexio.sh` verifies that the Reflexio checkout is
+clean, equals `origin/main`, is tagged `v<new-reflexio-version>`, and that
+`reflexio-ai==<new-reflexio-version>` exists on PyPI. It updates and commits:
+
+```text
+plugin/pyproject.toml
+plugin/uv.lock
+reflexio.lock.json
+```
+
+The generated commit message is:
+
+```text
+Sync Reflexio release metadata
+```
+
+Then `make release VERSION=<new-claude-smart-version>` creates the separate
+claude-smart release commit and tag.
+
+### What make release does
+
+For claude-smart, `make release` runs these steps in order and aborts on the
+first failure:
 
 1. `check-version` — regex-validates `VERSION` as semver.
 2. `check-clean` — refuses to run with a dirty working tree.
-3. `bump` — rewrites the four version strings.
+3. `bump` — rewrites release metadata.
 4. `git add` + `git commit -m "Release v$VERSION"`.
 5. `git tag -a v$VERSION`.
 6. `publish-npm` → `npm publish --access public`.
 7. `publish-pypi` → `rm -rf dist/ && uv build && uv publish`.
 8. `git push --follow-tags`.
 
-For a vendor-mode Reflexio release, run `make release-npm VERSION=...` after
-`bash scripts/release-with-reflexio.sh`. The generated vendor bundle is only in
-the npm tarball; `make release` intentionally refuses to publish PyPI while
+### Vendor-mode exception: unpublished Reflexio update
+
+Use vendor mode only when claude-smart needs Reflexio changes that should not or
+cannot be published to PyPI first. This is npm-only because the generated vendor
+bundle is included in the npm tarball, not the PyPI wheel.
+
+```bash
+bash scripts/release-with-reflexio.sh
+make release-npm VERSION=<new-claude-smart-version>
+```
+
+The helper exports the committed Reflexio `HEAD` into `plugin/vendor/reflexio`,
+updates and commits `reflexio.lock.json`, and leaves the generated vendor bundle
+in the working tree. Keep `plugin/vendor/reflexio` in place until npm publish
+completes. `make release` intentionally refuses to publish PyPI while
 `reflexio.lock.json` says `source=vendor`.
 
 Because publish happens **before** the push, a registry failure (e.g. auth expired) leaves the commit and tag local — you can fix the cause and re-run `make publish && git push --follow-tags` without re-bumping.
@@ -244,8 +312,8 @@ Before running `make release`:
 - [ ] Hook behavior, CLI flags, env vars are unchanged — or a migration note is in the README.
 - [ ] `plugin/hooks/hooks.json` and `plugin/commands/*.md` render correctly in a local Claude Code session (smoke test: install from a local `directory` marketplace, start a session, run `/show`).
 - [ ] If claude-smart needs new Reflexio behavior, choose a Reflexio release mode:
-  - PyPI mode: `reflexio-ai` is published, then `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` updates `plugin/pyproject.toml`, `plugin/uv.lock`, and `reflexio.lock.json`.
-  - Vendor mode: `bash scripts/release-with-reflexio.sh` generates `plugin/vendor/reflexio` and updates `reflexio.lock.json`; keep the generated vendor directory in place until npm publish completes.
+  - PyPI mode: `reflexio-ai` is published, then `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` updates and commits `plugin/pyproject.toml`, `plugin/uv.lock`, and `reflexio.lock.json`.
+  - Vendor mode: `bash scripts/release-with-reflexio.sh` generates `plugin/vendor/reflexio` and updates and commits `reflexio.lock.json`; keep the generated vendor directory in place until npm publish completes.
 - [ ] `python scripts/check-reflexio-lock.py` passes.
 - [ ] `npm pack --dry-run --json` includes the root wrapper, marketplace metadata, plugin payload, dashboard sources, README, and LICENSE, and excludes `.venv`, `node_modules`, `.next/cache`, and Python caches.
 - [ ] If you touched `pyproject.toml` dependencies, `uv build` succeeds locally and the wheel's `METADATA` does not carry any local path dependency.
@@ -285,6 +353,8 @@ Manual equivalent:
 python scripts/sync-reflexio-dep.py --write --check-pypi --release-checks
 uv lock --project plugin --upgrade-package reflexio-ai
 python scripts/check-reflexio-lock.py
+git add plugin/pyproject.toml plugin/uv.lock reflexio.lock.json
+git commit -m "Sync Reflexio release metadata"
 ```
 
 **`make release` committed and tagged but `npm publish` failed after.**
@@ -348,56 +418,12 @@ claude-smart install
 Do **not** use `claude-smart update` for this loop — it wraps `claude plugin update claude-smart@reflexioai`, the end-user path for pulling a newer *published* release from the marketplace. It is version-driven (a same-version rebuild has nothing to update to) and updates from the registered source rather than re-ingesting a tarball you just built. Bumping the patch version with `make bump` sidesteps all version-dedup ambiguity if you'd rather not use `--force`.
 
 For Reflexio backend changes, edit `open_source/reflexio/` and either:
-- Publish `reflexio-ai` to PyPI and bump `plugin/pyproject.toml`, or
-- Use vendor mode (see [Release flow with Reflexio](#release-flow-with-reflexio) below) — `make package` then bundles the local Reflexio source into `plugin/vendor/reflexio` so the tarball install picks it up.
+- Publish `reflexio-ai` to PyPI and use [Path B](#path-b-release-claude-smart-with-a-published-reflexio-update), or
+- Use [vendor mode](#vendor-mode-exception-unpublished-reflexio-update) — `make package` then bundles the local Reflexio source into `plugin/vendor/reflexio` so the tarball install picks it up.
 
 What's picked up after each reinstall + host restart:
 
 - `plugin/src/claude_smart/`, `plugin/commands/*.md`, `plugin/hooks/`, `plugin/dashboard/` — all from the freshly installed tarball. There is no editable code path; the running plugin is always whatever the latest installed tarball contains.
-
-### Release flow with Reflexio
-
-If claude-smart does not need new Reflexio behavior, release claude-smart only; do not change the `reflexio-ai` dependency.
-
-If claude-smart needs unpublished Reflexio behavior, use vendor mode. The committed package metadata still points at the PyPI baseline, but the npm artifact carries the exact Reflexio source snapshot:
-
-```bash
-bash scripts/release-with-reflexio.sh
-```
-
-For non-standard worktree layouts:
-
-```bash
-REFLEXIO_PATH=/path/to/reflexio-main bash scripts/release-with-reflexio.sh
-```
-
-Commit:
-
-```text
-reflexio.lock.json
-```
-
-Keep generated `plugin/vendor/reflexio` in place until npm publish completes; it is gitignored but included in the npm tarball. Then release claude-smart to npm:
-
-```bash
-make release-npm VERSION=<new-claude-smart-version>
-```
-
-If claude-smart needs a newer published Reflexio package dependency, merge Reflexio, tag the release commit as `v<version>`, publish `reflexio-ai`, then run:
-
-```bash
-REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh
-```
-
-Commit:
-
-```text
-plugin/pyproject.toml
-plugin/uv.lock
-reflexio.lock.json
-```
-
-Then release claude-smart.
 
 ### Sanity check
 

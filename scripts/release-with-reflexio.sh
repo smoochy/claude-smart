@@ -12,6 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"
 REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"
 PYTHON_BIN="${PYTHON:-python3}"
+COMMIT_MESSAGE="Sync Reflexio release metadata"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "error: Python interpreter not found: $PYTHON_BIN" >&2
@@ -44,12 +45,37 @@ PY
   rm -f "$pack_json"
 }
 
+ensure_commit_inputs_clean() {
+  if ! git diff --cached --quiet; then
+    echo "error: staged changes already exist; commit or unstage them before running this release helper" >&2
+    exit 1
+  fi
+
+  if ! git diff --quiet -- "$@"; then
+    echo "error: release metadata files already have unstaged changes:" >&2
+    git diff --name-only -- "$@" >&2
+    echo "Commit, stash, or discard those changes before running this release helper." >&2
+    exit 1
+  fi
+}
+
+commit_release_metadata() {
+  git add "$@"
+  if git diff --cached --quiet -- "$@"; then
+    echo "No release metadata changes to commit."
+    return 0
+  fi
+  git commit -m "$COMMIT_MESSAGE"
+}
+
 cd "$REPO_ROOT"
 
 echo "Using Reflexio checkout: $REFLEXIO_PATH"
 
 case "$REFLEXIO_RELEASE_SOURCE" in
   vendor)
+    COMMIT_FILES=(reflexio.lock.json)
+    ensure_commit_inputs_clean "${COMMIT_FILES[@]}"
     "$PYTHON_BIN" scripts/vendor-reflexio.py \
       --reflexio-path "$REFLEXIO_PATH" \
       --write
@@ -62,6 +88,8 @@ case "$REFLEXIO_RELEASE_SOURCE" in
     uv pip install --project plugin --python "$PLUGIN_PYTHON" --reinstall --no-deps plugin/vendor/reflexio
     ;;
   pypi)
+    COMMIT_FILES=(plugin/pyproject.toml plugin/uv.lock reflexio.lock.json)
+    ensure_commit_inputs_clean "${COMMIT_FILES[@]}"
     "$PYTHON_BIN" scripts/sync-reflexio-dep.py \
       --reflexio-path "$REFLEXIO_PATH" \
       --write \
@@ -83,11 +111,13 @@ else
   npm pack --dry-run
 fi
 
+commit_release_metadata "${COMMIT_FILES[@]}"
+
 if [ "$REFLEXIO_RELEASE_SOURCE" = "vendor" ]; then
   cat <<'EOF'
 
 Release checks passed.
-Review and commit:
+Committed:
   reflexio.lock.json
 
 Keep generated plugin/vendor/reflexio in place until npm publish completes.
@@ -100,7 +130,7 @@ else
   cat <<'EOF'
 
 Release checks passed.
-Review and commit:
+Committed:
   plugin/pyproject.toml
   plugin/uv.lock
   reflexio.lock.json
