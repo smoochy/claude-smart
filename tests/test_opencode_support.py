@@ -548,11 +548,19 @@ def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
     fake_opencode.write_text(
         f"""#!/usr/bin/env node
 const fs = require("fs");
+const path = require("path");
+const args = process.argv.slice(2);
+const dirIndex = args.indexOf("--dir");
+const workDir = dirIndex >= 0 ? args[dirIndex + 1] : "";
+const dotConfig = path.join(workDir, ".opencode", "opencode.json");
+const rootConfig = path.join(workDir, "opencode.json");
 fs.writeFileSync(
   {json.dumps(str(call_log))},
   JSON.stringify({{
-    args: process.argv.slice(2),
+    args,
     cwd: process.cwd(),
+    dotConfigExists: fs.existsSync(dotConfig),
+    rootConfigExists: fs.existsSync(rootConfig),
     stdin: fs.readFileSync(0, "utf8"),
     env: {{
       CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
@@ -607,6 +615,8 @@ process.stdout.write(JSON.stringify({{
     assert call["args"][:4] == ["run", "--pure", "--format", "json"]
     assert "--agent" in call["args"]
     assert "--dir" in call["args"]
+    assert call["dotConfigExists"] is True
+    assert call["rootConfigExists"] is False
     assert "--model" not in call["args"]
     assert "system text\n\n## Task\nuser prompt" not in call["args"]
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
