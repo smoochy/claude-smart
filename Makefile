@@ -90,7 +90,7 @@ check-locked-project-version: ## Verify plugin/uv.lock claude-smart version matc
 check-standalone-lock: ## Verify plugin/uv.lock resolves cleanly OUTSIDE the enterprise uv workspace (what end users hit)
 	@bash scripts/standalone-lock.sh --check
 
-relock: ## Regenerate plugin/uv.lock as a standalone lockfile (reflexio-ai from PyPI)
+relock: unskip-worktree ## Regenerate plugin/uv.lock as a standalone lockfile (reflexio-ai from PyPI)
 	@bash scripts/standalone-lock.sh --write
 
 bump: check-version unskip-worktree ## Rewrite version in all release manifests
