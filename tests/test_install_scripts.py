@@ -1257,6 +1257,9 @@ def test_reflexio_release_sync_has_strict_release_checks() -> None:
     assert '--reflexio-path "$REFLEXIO_PATH"' in release_script
     assert "--check-pypi" in release_script
     assert "--release-checks" in release_script
+    assert "ensure_commit_inputs_clean" in release_script
+    assert "commit_release_metadata" in release_script
+    assert 'git commit -m "$COMMIT_MESSAGE"' in release_script
 
 
 def test_reflexio_vendor_release_uses_generated_bundle() -> None:
