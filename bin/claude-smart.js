@@ -25,7 +25,9 @@ const {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -33,13 +35,14 @@ const {
 } = require("fs");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join } = require("path");
+const { dirname, join, resolve } = require("path");
+const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
 const CODEX_MARKETPLACE_NAME = "reflexioai";
 const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
-const OPENCODE_PLUGIN_SPEC = "claude-smart";
+const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
@@ -50,6 +53,9 @@ const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
+const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
+const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
+const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
 const PACKAGE_ROOT = dirname(dirname(__filename));
 const CODEX_MARKETPLACE_DIR = join(
@@ -96,6 +102,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".venv",
   ".pytest_cache",
   ".ruff_cache",
+  ".git",
   "node_modules",
   ".next",
 ]);
@@ -450,7 +457,41 @@ function opencodePluginSpec(entry) {
   return null;
 }
 
-function patchOpenCodePluginConfig(configPath, { install }) {
+function opencodeLocalPluginSpec(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
+  return pathToFileURL(packageRoot).href;
+}
+
+function isOpenCodeLocalPackagePath(packagePath) {
+  return (
+    sameRealPath(packagePath, OPENCODE_LOCAL_PACKAGE_DIR) ||
+    resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR)
+  );
+}
+
+function isOpenCodeClaudeSmartSpec(spec) {
+  if (!spec) return false;
+  if (spec === OPENCODE_BARE_PLUGIN_SPEC || spec.startsWith(`${OPENCODE_BARE_PLUGIN_SPEC}@`)) {
+    return true;
+  }
+  if (!spec.startsWith("file://")) return false;
+  let packagePath = null;
+  try {
+    packagePath = fileURLToPath(spec);
+  } catch {
+    return false;
+  }
+  if (isOpenCodeLocalPackagePath(packagePath)) return true;
+  try {
+    const manifest = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
+    if (manifest && manifest.name === OPENCODE_BARE_PLUGIN_SPEC) return true;
+  } catch {
+    // Missing or malformed manifests are not enough to identify arbitrary file specs.
+  }
+  return false;
+}
+
+function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
+  const resolvedPluginSpec = install ? (pluginSpec || opencodeLocalPluginSpec()) : pluginSpec;
   const data = readJsoncObject(configPath);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
@@ -461,8 +502,8 @@ function patchOpenCodePluginConfig(configPath, { install }) {
     ...(Array.isArray(data.plugin) ? data.plugin : []),
     ...(Array.isArray(data.plugins) ? data.plugins : []),
   ];
-  const kept = current.filter((entry) => opencodePluginSpec(entry) !== OPENCODE_PLUGIN_SPEC);
-  const next = install ? [...kept, OPENCODE_PLUGIN_SPEC] : kept;
+  const kept = current.filter((entry) => !isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry)));
+  const next = install ? [...kept, resolvedPluginSpec] : kept;
   const changed =
     data.plugins !== undefined ||
     (Array.isArray(data.plugin)
@@ -482,10 +523,6 @@ function patchOpenCodePluginConfig(configPath, { install }) {
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
   return { changed: true, configPath, backupPath };
-}
-
-function isNpxPackageRoot(path) {
-  return path.split(/[\\/]+/).includes("_npx");
 }
 
 function hasExtractionProvider() {
@@ -600,6 +637,130 @@ function forcePluginRoot(pluginRoot) {
   }
 }
 
+function sameRealPath(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
+function pathEntryExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function fileSha256(path) {
+  return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function verifyOpenCodePluginPackage(packageRoot) {
+  const sourceScript = join(PACKAGE_ROOT, "plugin", "scripts", "smart-install.sh");
+  const copiedScript = join(packageRoot, "plugin", "scripts", "smart-install.sh");
+  for (const file of [join(packageRoot, "package.json"), copiedScript]) {
+    if (!existsSync(file)) {
+      throw new Error(`OpenCode local plugin package is missing ${file}`);
+    }
+  }
+  if (fileSha256(sourceScript) !== fileSha256(copiedScript)) {
+    throw new Error(
+      "OpenCode local plugin package does not match the installed claude-smart package",
+    );
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withOpenCodePackageInstallLock(fn) {
+  const lockDir = join(dirname(OPENCODE_LOCAL_PACKAGE_DIR), ".install.lock");
+  mkdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR), { recursive: true });
+  const deadline = Date.now() + OPENCODE_PACKAGE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      mkdirSync(lockDir);
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - statSync(lockDir).mtimeMs > OPENCODE_PACKAGE_LOCK_STALE_MS) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statErr) {
+        if (statErr && statErr.code !== "ENOENT") throw statErr;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out waiting for OpenCode package install lock at ${lockDir}`);
+      }
+      sleepSync(100);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+function uniqueOpenCodePackagePath(prefix) {
+  return join(
+    dirname(OPENCODE_LOCAL_PACKAGE_DIR),
+    `${prefix}-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+  );
+}
+
+function replaceOpenCodePluginPackage(stagedPackage, packageRoot) {
+  const backupPackage = uniqueOpenCodePackagePath(".claude-smart-previous");
+  let backupCreated = false;
+  try {
+    if (pathEntryExists(packageRoot)) {
+      renameSync(packageRoot, backupPackage);
+      backupCreated = true;
+    }
+    renameSync(stagedPackage, packageRoot);
+    if (backupCreated) {
+      rmSync(backupPackage, { recursive: true, force: true });
+    }
+  } catch (err) {
+    if (backupCreated && !existsSync(packageRoot) && existsSync(backupPackage)) {
+      renameSync(backupPackage, packageRoot);
+    }
+    throw err;
+  }
+}
+
+function installOpenCodePluginPackage() {
+  const packageRoot = OPENCODE_LOCAL_PACKAGE_DIR;
+  if (sameRealPath(PACKAGE_ROOT, packageRoot)) {
+    verifyOpenCodePluginPackage(packageRoot);
+    return packageRoot;
+  }
+  return withOpenCodePackageInstallLock(() => {
+    const stagedPackage = uniqueOpenCodePackagePath(".claude-smart-copy");
+    rmSync(stagedPackage, { recursive: true, force: true });
+    try {
+      cpSync(PACKAGE_ROOT, stagedPackage, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: false,
+        filter: shouldCopyPath,
+      });
+      verifyOpenCodePluginPackage(stagedPackage);
+      replaceOpenCodePluginPackage(stagedPackage, packageRoot);
+      verifyOpenCodePluginPackage(packageRoot);
+      return packageRoot;
+    } finally {
+      rmSync(stagedPackage, { recursive: true, force: true });
+    }
+  });
+}
+
 async function bootstrapClaudeCodeInstall() {
   const pluginRoot = findClaudeCodePluginRoot();
   if (!pluginRoot) {
@@ -692,6 +853,18 @@ function runChecked(command, args, options = {}) {
     child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
     child.on("error", () => resolve(1));
   });
+}
+
+function runSilentStatus(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    env: options.env || process.env,
+    shell: isWindows() && /\.(?:cmd|bat)$/i.test(command),
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  if (result.error || result.signal) return 1;
+  return typeof result.status === "number" ? result.status : 1;
 }
 
 function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
@@ -1092,6 +1265,59 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
   if (code !== 0) throw new Error(`vendored Reflexio install failed in ${pluginRoot}`);
 }
 
+async function syncPluginPythonEnv(pluginRoot, uv, env) {
+  let code = await runChecked(
+    uv,
+    ["sync", "--locked", "--python", "3.12", "--quiet"],
+    { cwd: pluginRoot, env },
+  );
+  if (code === 0) return;
+
+  const lockIsFresh = runSilentStatus(
+    uv,
+    ["lock", "--check", "--python", "3.12"],
+    { cwd: pluginRoot, env },
+  ) === 0;
+  if (lockIsFresh) {
+    process.stderr.write(
+      `warning: quiet uv sync failed in ${pluginRoot}; retrying with full output.\n`,
+    );
+    code = await runChecked(
+      uv,
+      ["sync", "--locked", "--python", "3.12"],
+      { cwd: pluginRoot, env },
+    );
+    if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
+    return;
+  }
+
+  process.stderr.write(
+    "warning: plugin/uv.lock is out of sync; refreshing local lockfile and retrying uv sync.\n",
+  );
+  code = await runChecked(
+    uv,
+    ["lock", "--python", "3.12"],
+    { cwd: pluginRoot, env },
+  );
+  if (code !== 0) throw new Error(`uv lock failed in ${pluginRoot}`);
+  code = await runChecked(
+    uv,
+    ["sync", "--python", "3.12", "--quiet"],
+    { cwd: pluginRoot, env },
+  );
+  if (code !== 0) {
+    process.stderr.write(
+      `warning: quiet uv sync failed in ${pluginRoot} after refreshing plugin/uv.lock; retrying with full output.\n`,
+    );
+    code = await runChecked(
+      uv,
+      ["sync", "--python", "3.12"],
+      { cwd: pluginRoot, env },
+    );
+  }
+  if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
+}
+
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
@@ -1113,27 +1339,12 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     );
     if (lockCode !== 0) throw new Error(`uv lock failed in ${pluginRoot}`);
   }
-  let code = await runChecked(
-    uv,
-    ["sync", "--locked", "--python", "3.12", "--quiet"],
-    { cwd: pluginRoot, env },
-  );
-  if (code !== 0) {
-    process.stderr.write(
-      `warning: quiet uv sync failed in ${pluginRoot}; retrying with full output.\n`,
-    );
-    code = await runChecked(
-      uv,
-      ["sync", "--locked", "--python", "3.12"],
-      { cwd: pluginRoot, env },
-    );
-  }
-  if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
+  await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
-    code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
+    let code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm ci failed in ${dashboardDir}`);
     code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm run build failed in ${dashboardDir}`);
@@ -1169,9 +1380,10 @@ function printHelp() {
       "  7. Restart Codex.",
       "",
       "OpenCode install:",
-      "  1. Adds \"claude-smart\" to OpenCode's plugin list in opencode.json",
-      "  2. Prepares local services now for stable installs; npx prepares on next OpenCode launch",
-      "  3. Restart OpenCode.",
+      `  1. Copies this package to ${OPENCODE_LOCAL_PACKAGE_DIR}`,
+      "  2. Adds that local file:// package to OpenCode's plugin list in opencode.json",
+      "  3. Prepares local services now from the copied plugin runtime",
+      "  4. Restart OpenCode.",
       "",
       "Update:",
       "  npx claude-smart update                        Reinstall Claude Code support from this package",
@@ -1894,43 +2106,44 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
 
-  const pluginRoot = join(PACKAGE_ROOT, "plugin");
-  let result;
-  if (isNpxPackageRoot(PACKAGE_ROOT)) {
-    try {
-      result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
-    } catch (err) {
-      process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
-      process.exit(1);
-    }
-    process.stdout.write(
-      "Skipped starting claude-smart services from npx's temporary package cache; OpenCode will prepare the runtime from its installed plugin package on next launch.\n",
+  let packageRoot;
+  try {
+    packageRoot = installOpenCodePluginPackage();
+  } catch (err) {
+    process.stderr.write(
+      `error: could not prepare claude-smart OpenCode package: ${err && err.message ? err.message : err}\n`,
     );
-  } else {
-    try {
-      await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
-    } catch (err) {
-      process.stderr.write(
-        `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
-      );
-      process.exit(1);
-    }
-    try {
-      result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
-    } catch (err) {
-      process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
-      stopClaudeSmartServices(pluginRoot);
-      process.exit(1);
-    }
-    if (readOnly) {
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-    }
-    if (startBackendService(pluginRoot, "opencode")) {
-      process.stdout.write("Started claude-smart backend service.\n");
-    }
-    if (refreshDashboardService(pluginRoot)) {
-      process.stdout.write("Refreshed claude-smart dashboard service.\n");
-    }
+    process.exit(1);
+  }
+  const pluginRoot = join(packageRoot, "plugin");
+  const pluginSpec = opencodeLocalPluginSpec(packageRoot);
+  let result;
+  try {
+    await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
+  } catch (err) {
+    process.stderr.write(
+      `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
+    );
+    process.exit(1);
+  }
+  try {
+    result = patchOpenCodePluginConfig(opencodeConfigPath(args), {
+      install: true,
+      pluginSpec,
+    });
+  } catch (err) {
+    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+    stopClaudeSmartServices(pluginRoot);
+    process.exit(1);
+  }
+  if (readOnly) {
+    process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+  }
+  if (startBackendService(pluginRoot, "opencode")) {
+    process.stdout.write("Started claude-smart backend service.\n");
+  }
+  if (refreshDashboardService(pluginRoot)) {
+    process.stdout.write("Refreshed claude-smart dashboard service.\n");
   }
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
@@ -1938,7 +2151,8 @@ async function runInstallOpenCode(args) {
   process.stdout.write(
     [
       "",
-      `${result.changed ? "Updated" : "OpenCode config already includes"} "${OPENCODE_PLUGIN_SPEC}" in ${result.configPath}.`,
+      `${result.changed ? "Updated" : "OpenCode config already includes"} "${pluginSpec}" in ${result.configPath}.`,
+      `Prepared claude-smart OpenCode package at ${packageRoot}.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",
@@ -1975,6 +2189,7 @@ async function runUninstallCodex() {
 
 async function runUninstallOpenCode(args) {
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
+  stopClaudeSmartServices(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
   let result;
   try {
     result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: false });
@@ -1985,12 +2200,18 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
+  rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  try {
+    rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
+  } catch {
+    // Keep the parent when it still contains future OpenCode state.
+  }
   process.stdout.write(
     [
       "",
       result.changed
-        ? `Removed "${OPENCODE_PLUGIN_SPEC}" from ${result.configPath}.`
-        : `OpenCode config did not include "${OPENCODE_PLUGIN_SPEC}".`,
+        ? `Removed claude-smart OpenCode plugin entries from ${result.configPath}.`
+        : "OpenCode config did not include claude-smart.",
       "Restart OpenCode to apply.",
       ...LOCAL_DATA_NOTICE,
       "",
@@ -2050,7 +2271,8 @@ module.exports = {
   configureReflexioSetup,
   patchCodexHooksForNode,
   opencodeConfigPath,
-  isNpxPackageRoot,
+  opencodeLocalPluginSpec,
+  installOpenCodePluginPackage,
   patchOpenCodePluginConfig,
   hasExtractionProvider,
   platformSupportError,

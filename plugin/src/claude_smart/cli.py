@@ -21,6 +21,10 @@ Exposes the following subcommands:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from hashlib import sha256
 import json
 import os
 import re
@@ -29,9 +33,9 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from claude_smart import context_format, cs_cite, env_config, ids, publish, state
 from claude_smart.reflexio_adapter import Adapter
@@ -56,7 +60,7 @@ _CODEX_PLUGIN_CACHE_DIR = (
     / "claude-smart"
 )
 _CODEX_CLI_TIMEOUT_SECONDS = 30
-_OPENCODE_PLUGIN_SPEC = "claude-smart"
+_OPENCODE_BARE_PLUGIN_SPEC = "claude-smart"
 _OPENCODE_CONFIG_NAMES = ("opencode.json", "opencode.jsonc")
 _REFLEXIO_UNREACHABLE_MSG = (
     "Failed to reach reflexio. Check ~/.claude-smart/backend.log "
@@ -72,6 +76,9 @@ _BACKEND_SCRIPT = _SCRIPTS_DIR / "backend-service.sh"
 _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
 _REFLEXIO_DIR = Path.home() / ".reflexio"
 _STATE_DIR = Path.home() / ".claude-smart"
+_OPENCODE_LOCAL_PACKAGE_DIR = _STATE_DIR / "opencode" / "claude-smart"
+_OPENCODE_PACKAGE_LOCK_TIMEOUT_SECONDS = 120.0
+_OPENCODE_PACKAGE_LOCK_STALE_SECONDS = 10 * 60.0
 _LOCAL_DATA_NOTICE = (
     "Local data was kept so reinstalling claude-smart can reuse your learned "
     "rules, sessions, logs, and local Reflexio data.\n"
@@ -113,6 +120,7 @@ _COPYTREE_IGNORE = shutil.ignore_patterns(
     "*.pyo",
     ".pytest_cache",
     ".ruff_cache",
+    ".git",
     ".next",
     "node_modules",
 )
@@ -1080,9 +1088,50 @@ def _opencode_plugin_spec(entry: object) -> str | None:
     return None
 
 
+def _opencode_local_plugin_spec(
+    package_root: Path = _OPENCODE_LOCAL_PACKAGE_DIR,
+) -> str:
+    return package_root.resolve(strict=False).as_uri()
+
+
+def _is_default_opencode_package_path(package_path: Path) -> bool:
+    if _same_real_path(package_path, _OPENCODE_LOCAL_PACKAGE_DIR):
+        return True
+    try:
+        return package_path.resolve(strict=False) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
+
+def _is_opencode_claude_smart_spec(spec: str | None) -> bool:
+    if not spec:
+        return False
+    if spec == _OPENCODE_BARE_PLUGIN_SPEC or spec.startswith(
+        f"{_OPENCODE_BARE_PLUGIN_SPEC}@"
+    ):
+        return True
+    parsed = urlparse(spec)
+    if parsed.scheme != "file":
+        return False
+    package_path = Path(url2pathname(parsed.path))
+    if _is_default_opencode_package_path(package_path):
+        return True
+    try:
+        manifest = json.loads((package_path / "package.json").read_text())
+        if manifest.get("name") == _OPENCODE_BARE_PLUGIN_SPEC:
+            return True
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
+
+
 def _patch_opencode_plugin_config(
-    config_path: Path, *, install: bool
+    config_path: Path, *, install: bool, plugin_spec: str | None = None
 ) -> tuple[bool, Path]:
+    if install and plugin_spec is None:
+        plugin_spec = _opencode_local_plugin_spec()
     data = _read_jsonc_object(config_path)
     for field in ("plugins", "plugin"):
         value = data.get(field)
@@ -1100,9 +1149,13 @@ def _patch_opencode_plugin_config(
     kept = [
         item
         for item in plugins
-        if _opencode_plugin_spec(item) != _OPENCODE_PLUGIN_SPEC
+        if not _is_opencode_claude_smart_spec(_opencode_plugin_spec(item))
     ]
-    next_plugins = [*kept, _OPENCODE_PLUGIN_SPEC] if install else kept
+    if install:
+        assert plugin_spec is not None
+        next_plugins = [*kept, plugin_spec]
+    else:
+        next_plugins = kept
     if isinstance(current_plugin, list):
         changed = ("plugins" in data) or next_plugins != current_plugin
     else:
@@ -1144,6 +1197,102 @@ def _opencode_install_supported_from_this_package() -> bool:
     return (_SCRIPTS_DIR / "smart-install.sh").is_file()
 
 
+def _file_sha256(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _same_real_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=True) == right.resolve(strict=True)
+    except OSError:
+        return False
+
+
+def _verify_opencode_plugin_package(package_root: Path) -> None:
+    source_script = _PLUGIN_ROOT / "scripts" / "smart-install.sh"
+    copied_script = package_root / "plugin" / "scripts" / "smart-install.sh"
+    for path in (package_root / "package.json", copied_script):
+        if not path.exists():
+            raise OSError(f"OpenCode local plugin package is missing {path}")
+    if _file_sha256(source_script) != _file_sha256(copied_script):
+        raise OSError(
+            "OpenCode local plugin package does not match the installed claude-smart package"
+        )
+
+
+@contextmanager
+def _opencode_package_install_lock(package_root: Path) -> Iterator[None]:
+    lock_dir = package_root.parent / ".install.lock"
+    package_root.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _OPENCODE_PACKAGE_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            try:
+                stale = (
+                    time.time() - lock_dir.stat().st_mtime
+                    > _OPENCODE_PACKAGE_LOCK_STALE_SECONDS
+                )
+            except OSError:
+                stale = False
+            if stale:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise OSError(
+                    f"timed out waiting for OpenCode package install lock at {lock_dir}"
+                )
+            time.sleep(0.1)
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+
+def _unique_opencode_package_path(parent: Path, prefix: str) -> Path:
+    return parent / f"{prefix}-{os.getpid()}-{time.monotonic_ns()}"
+
+
+def _replace_opencode_plugin_package(staged_package: Path, package_root: Path) -> None:
+    backup_package = _unique_opencode_package_path(
+        package_root.parent, ".claude-smart-previous"
+    )
+    backup_created = False
+    try:
+        if package_root.exists() or package_root.is_symlink():
+            package_root.rename(backup_package)
+            backup_created = True
+        staged_package.rename(package_root)
+        if backup_created:
+            shutil.rmtree(backup_package, ignore_errors=True)
+    except OSError:
+        if backup_created and not package_root.exists() and backup_package.exists():
+            backup_package.rename(package_root)
+        raise
+
+
+def _install_opencode_plugin_package() -> Path:
+    package_root = _OPENCODE_LOCAL_PACKAGE_DIR
+    if _same_real_path(_REPO_ROOT, package_root):
+        _verify_opencode_plugin_package(package_root)
+        return package_root
+    with _opencode_package_install_lock(package_root):
+        staged_package = _unique_opencode_package_path(
+            package_root.parent, ".claude-smart-copy"
+        )
+        shutil.rmtree(staged_package, ignore_errors=True)
+        try:
+            shutil.copytree(_REPO_ROOT, staged_package, ignore=_COPYTREE_IGNORE)
+            _verify_opencode_plugin_package(staged_package)
+            _replace_opencode_plugin_package(staged_package, package_root)
+            _verify_opencode_plugin_package(package_root)
+        finally:
+            shutil.rmtree(staged_package, ignore_errors=True)
+    return package_root
+
+
 def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
     if not _opencode_install_supported_from_this_package():
         return (
@@ -1152,22 +1301,28 @@ def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
             "Run `npx claude-smart install --host opencode`.",
         )
     try:
-        _force_plugin_root(_PLUGIN_ROOT)
+        package_root = _install_opencode_plugin_package()
+    except OSError as exc:
+        return False, str(exc)
+    plugin_root = package_root / "plugin"
+    try:
+        _force_plugin_root(plugin_root)
     except OSError as exc:
         return False, str(exc)
     bash = _resolve_bash()
     if not bash:
         return False, "bash is required to bootstrap claude-smart dependencies"
-    result = subprocess.run([bash, str(_SCRIPTS_DIR / "smart-install.sh")], cwd=_PLUGIN_ROOT)
+    scripts_dir = plugin_root / "scripts"
+    result = subprocess.run([bash, str(scripts_dir / "smart-install.sh")], cwd=plugin_root)
     if result.returncode != 0:
-        return False, f"smart-install.sh failed in {_PLUGIN_ROOT}"
+        return False, f"smart-install.sh failed in {plugin_root}"
     if _INSTALL_FAILURE_MARKER.is_file():
         first_line = _INSTALL_FAILURE_MARKER.read_text().splitlines()
         reason = (first_line[0].strip() if first_line else "") or "unknown error"
         return False, reason
     if read_only:
-        _prune_publish_hooks_for_read_only(_PLUGIN_ROOT)
-    return True, str(_PLUGIN_ROOT)
+        _prune_publish_hooks_for_read_only(plugin_root)
+    return True, str(package_root)
 
 
 def cmd_install_opencode(args: argparse.Namespace) -> int:
@@ -1181,24 +1336,31 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     if not _has_extraction_provider():
         sys.stderr.write(_extraction_provider_error())
         return 1
-    bootstrapped, message = _bootstrap_opencode_install(read_only)
+    bootstrapped, package_root_text = _bootstrap_opencode_install(read_only)
     if not bootstrapped:
         sys.stderr.write(
-            f"error: claude-smart OpenCode setup failed during dependency bootstrap: {message}\n"
+            f"error: claude-smart OpenCode setup failed during dependency bootstrap: {package_root_text}\n"
         )
         return 1
+    package_root = Path(package_root_text)
+    plugin_root = package_root / "plugin"
+    plugin_spec = _opencode_local_plugin_spec(package_root)
     config_path = _opencode_config_path(
         global_config=bool(getattr(args, "global_config", False))
     )
     try:
-        changed, config_path = _patch_opencode_plugin_config(config_path, install=True)
+        changed, config_path = _patch_opencode_plugin_config(
+            config_path,
+            install=True,
+            plugin_spec=plugin_spec,
+        )
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     action = "Updated" if changed else "OpenCode config already includes"
     sys.stdout.write(
-        f"{action} `{_OPENCODE_PLUGIN_SPEC}` in {config_path}.\n"
-        f"Prepared claude-smart runtime at {message}.\n"
+        f"{action} `{plugin_spec}` in {config_path}.\n"
+        f"Prepared claude-smart runtime at {plugin_root}.\n"
         "Restart OpenCode in your project so it loads the plugin.\n"
     )
     return 0
@@ -1517,6 +1679,13 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
 def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     _run_service(_DASHBOARD_SCRIPT, "stop")
     _run_service(_BACKEND_SCRIPT, "stop")
+    local_scripts = _OPENCODE_LOCAL_PACKAGE_DIR / "plugin" / "scripts"
+    for script in (
+        local_scripts / "dashboard-service.sh",
+        local_scripts / "backend-service.sh",
+    ):
+        if script.exists():
+            _run_service(script, "stop")
     config_path = _opencode_config_path(
         global_config=bool(getattr(args, "global_config", False))
     )
@@ -1525,10 +1694,15 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
+    shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
+    try:
+        _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
+    except OSError:
+        pass
     if changed:
-        sys.stdout.write(f"Removed `{_OPENCODE_PLUGIN_SPEC}` from {config_path}.\n")
+        sys.stdout.write(f"Removed claude-smart OpenCode plugin entries from {config_path}.\n")
     else:
-        sys.stdout.write(f"OpenCode config did not include `{_OPENCODE_PLUGIN_SPEC}`.\n")
+        sys.stdout.write("OpenCode config did not include claude-smart.\n")
     sys.stdout.write(
         "Restart OpenCode to apply. "
         f"{_LOCAL_DATA_NOTICE}"
