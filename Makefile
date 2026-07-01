@@ -2,22 +2,25 @@
 #
 # Usage:
 #   make bump VERSION=0.1.1          Update version in all release manifests
-#   make release VERSION=0.1.1       Bump, commit, tag v0.1.1, publish, push
-#   make release-npm VERSION=0.1.1   Bump, commit, tag, publish npm only
-#   make publish                     Publish current version to npm + PyPI
+#   make release VERSION=0.1.1       Alias for release-npm (claude-smart ships via npm only)
+#   make release-npm VERSION=0.1.1   Re-vendor reflexio, bump, commit, tag, publish npm, push
+#   make publish                     Publish current version to npm
 #   make publish-npm                 npm publish only
-#   make publish-pypi                uv build + uv publish only
 #   make publish-dry                 Show what would ship without uploading
-#   make package                     Build the npm tarball locally without publishing
+#   make package                     Build the npm tarball locally (vendors local reflexio working tree)
+#
+# claude-smart is distributed exclusively via npm; it is no longer published to
+# PyPI (uvx install is unsupported). The reflexio-ai dependency still resolves
+# from PyPI, and a release always vendors the current reflexio submodule.
 #
 # Requires:
 #   - npm (logged in, or NPM_TOKEN set)
-#   - uv (UV_PUBLISH_TOKEN set for PyPI uploads)
+#   - uv (for standalone lockfile resolution + the plugin venv)
 #   - git (for the release flow)
 
-.PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry package \
+.PHONY: help bump release release-npm publish publish-npm publish-dry package vendor-release \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
-        check-vendor-reflexio check-pypi-compatible-reflexio \
+        check-vendor-reflexio \
         check-locked-project-version check-standalone-lock relock unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
@@ -59,8 +62,9 @@ check-reflexio-lock: ## Verify plugin/pyproject.toml matches reflexio.lock.json
 check-vendor-reflexio: ## Verify generated Reflexio vendor bundle exists when the lock requires it
 	@python3 scripts/check-reflexio-lock.py --check-vendor
 
-check-pypi-compatible-reflexio: ## Refuse PyPI publish when this release relies on a generated vendor bundle
-	@python3 -c 'import json, pathlib, sys; p=pathlib.Path("reflexio.lock.json"); data=json.loads(p.read_text()) if p.exists() else {}; sys.exit("error: reflexio.lock.json uses source=vendor; publish npm only with `make release-npm VERSION=...`, or run `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` first" if data.get("source") == "vendor" else 0)'
+vendor-release: unskip-worktree ## Re-vendor the current (clean) reflexio submodule + refresh reflexio.lock.json
+	@echo "→ vendoring reflexio submodule (must be clean) into plugin/vendor/reflexio"
+	@python3 scripts/vendor-reflexio.py --require-clean --write
 
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
@@ -120,23 +124,14 @@ publish-npm: check-vendor-reflexio check-locked-project-version check-standalone
 	npm run build:opencode
 	npm publish --access public
 
-publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publish the current version to PyPI
-	@echo "→ uv build + uv publish"
-	rm -rf plugin/dist/
-	uv build --project plugin --out-dir plugin/dist
-	uv publish --project plugin plugin/dist/*
-
 publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version check-standalone-lock ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm run build:opencode
 	@npm publish --dry-run
-	@echo ""
-	@echo "→ uv build (dry: inspect plugin/dist/ manually)"
-	rm -rf plugin/dist/
-	uv build --project plugin
-	@ls -la plugin/dist/
 
-package: check-vendor-reflexio check-locked-project-version check-standalone-lock ## Build the npm tarball locally without publishing
+package: check-locked-project-version check-standalone-lock ## Build the npm tarball locally (vendors the local reflexio working tree)
+	@echo "→ vendoring local reflexio working tree (uncommitted edits included) into plugin/vendor/reflexio"
+	@python3 scripts/vendor-reflexio.py --bundle-only --write
 	@echo "→ npm pack"
 	@npm run build:opencode
 	@tarball=$$(npm pack 2>/dev/null | tail -1); \
@@ -152,19 +147,12 @@ package: check-vendor-reflexio check-locked-project-version check-standalone-loc
 	  echo "  npx --package=$$abs -- claude-smart install --host codex"; \
 	  echo "  npx --package=$$abs -- claude-smart install --host opencode"
 
-publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
+publish: publish-npm ## Publish the current version to npm (claude-smart is npm-only)
 
-release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-pypi-compatible-reflexio bump check-locked-project-version ## Bump + commit + tag + publish + push
-	@echo "→ committing release v$(VERSION)"
-	git add $(VERSION_FILES) $(LOCK_FILES)
-	git commit -m "Release v$(VERSION)"
-	git tag -a v$(VERSION) -m "Release v$(VERSION)"
-	@$(MAKE) publish
-	@echo "→ pushing commit + tag"
-	git push --follow-tags
-	@echo "✓ released v$(VERSION)"
+release: ## Alias for release-npm — claude-smart is distributed via npm only
+	@$(MAKE) release-npm VERSION=$(VERSION)
 
-release-npm: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump check-locked-project-version ## Bump + commit + tag + publish npm only
+release-npm: check-version check-clean check-npm-auth vendor-release check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump check-locked-project-version ## Re-vendor + bump + commit + tag + publish npm
 	@echo "→ committing npm release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"

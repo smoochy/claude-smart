@@ -173,10 +173,7 @@ def test_package_target_checks_standalone_lock_freshness() -> None:
 
     assert "check-standalone-lock:" in makefile
     assert "bash scripts/standalone-lock.sh --check" in makefile
-    assert (
-        "package: check-vendor-reflexio check-locked-project-version "
-        "check-standalone-lock"
-    ) in makefile
+    assert "package: check-locked-project-version check-standalone-lock" in makefile
 
 
 def test_opencode_bridge_does_not_call_pre_tool() -> None:

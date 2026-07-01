@@ -8,7 +8,7 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | --- | --- |
 | `plugin/` | Claude Code plugin — hooks, slash commands, install script, and the Python package |
 | `plugin/src/claude_smart/` | Python package — hook handler, CLI, reflexio adapter |
-| `plugin/pyproject.toml` | Python manifest — shipped to PyPI via `uv build --project plugin` |
+| `plugin/pyproject.toml` | Python manifest for the plugin (deps + console scripts for the plugin venv); npm-only, not published to PyPI |
 | `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
 | `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
@@ -55,7 +55,7 @@ If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit
 ## Install dependency policy
 
 Vanilla install support means the user has installed the host (`claude` or
-`codex`) and the chosen installer runner (`npx` needs Node, `uvx` needs uv), but
+`codex`) and the installer runner (`npx`, which needs Node), but
 does not need global Python, uv, Node/npm for plugin runtime, npm packages, or
 embedding model files. The plugin bootstraps runtime dependencies into user
 state:
@@ -144,7 +144,7 @@ dynamic-param types, consult `plugin/dashboard/node_modules/next/dist/docs/`.
 ## Versioning
 
 `claude-smart` uses [semver](https://semver.org/). Release metadata must stay
-in lockstep — if it drifts, the npm wrapper, PyPI wheel, plugin metadata, and
+in lockstep — if it drifts, the npm wrapper, plugin metadata, vendor bundle, and
 marketplace entry can claim different versions, and users see confusing
 mismatches in `claude plugin list` vs. `npm view claude-smart version`.
 
@@ -165,12 +165,8 @@ Don't edit these by hand — use `make bump`.
 
 ### Prerequisites — one-time setup
 
-1. **npm**: `npm login` (writes a token to `~/.npmrc`).
-2. **PyPI**: create a project-scoped token at <https://pypi.org/manage/account/token/> and export it:
-   ```bash
-   export UV_PUBLISH_TOKEN=pypi-AgEN...
-   ```
-   Persist it in your shell rc if you release frequently.
+1. **npm**: `npm login` (writes a token to `~/.npmrc`). claude-smart is distributed via npm only — there is no PyPI publish of claude-smart itself.
+2. **uv** + **Python 3.12**: on `PATH`. The release flow shells out to `uv` (e.g. `bump` regenerates the standalone `plugin/uv.lock` via `scripts/standalone-lock.sh`; `scripts/release-with-reflexio.sh` runs `uv sync`/`uv pip install` into the plugin `.venv`) and to `python3` (`scripts/vendor-reflexio.py`, `scripts/check-reflexio-lock.py`).
 3. **git**: push access to `origin` for the tag push at the end of `make release`.
 
 ### Path A: release claude-smart only
@@ -187,9 +183,8 @@ git pull --ff-only
 # 2. Dry-run to confirm what will ship.
 make publish-dry
 #   → npm: tarball includes bin/, .agents/plugins/marketplace.json, plugin/, LICENSE, README.md, package.json
-#   → PyPI: dist/ contains a wheel + sdist
 
-# 3. Bump, commit, tag, publish npm + PyPI, then push commit + tag.
+# 3. Bump, commit, tag, publish to npm, then push commit + tag.
 make release VERSION=<new-claude-smart-version>
 ```
 
@@ -238,34 +233,53 @@ claude-smart release commit and tag.
 
 ### What make release does
 
-For claude-smart, `make release` runs these steps in order and aborts on the
-first failure:
+`make release` is an alias for `make release-npm` — claude-smart is published to
+npm only. It runs these steps in order (Make evaluates the prerequisites
+left-to-right) and aborts on the first failure:
 
 1. `check-version` — regex-validates `VERSION` as semver.
-2. `check-clean` — refuses to run with a dirty working tree.
-3. `bump` — rewrites release metadata.
-4. `git add` + `git commit -m "Release v$VERSION"`.
-5. `git tag -a v$VERSION`.
-6. `publish-npm` → `npm publish --access public`.
-7. `publish-pypi` → `rm -rf dist/ && uv build && uv publish`.
-8. `git push --follow-tags`.
+2. `check-clean` — refuses to run with a dirty `claude-smart` working tree. Runs
+   **before** `vendor-release`, so the tree must be clean before vendoring
+   refreshes `reflexio.lock.json`.
+3. `check-npm-auth` — `NPM_TOKEN` is set or `npm whoami` succeeds.
+4. `vendor-release` — `python3 scripts/vendor-reflexio.py --require-clean --write`
+   self-vendors the reflexio working tree (which must equal committed HEAD,
+   enforced by `--require-clean`) and refreshes `reflexio.lock.json`, so a stale
+   vendor bundle can never block the release.
+5. `check-reflexio-lock` — `plugin/pyproject.toml`'s `reflexio-ai` pin matches
+   the lock.
+6. `check-reflexio-pin` — the vendored reflexio version exists on PyPI.
+7. `check-vendor-reflexio` — the vendor bundle is present and its version matches
+   the lock.
+8. `bump` — rewrites release metadata (and regenerates the standalone `plugin/uv.lock`).
+9. `check-locked-project-version` — `plugin/uv.lock`'s claude-smart version matches
+   `plugin/pyproject.toml`.
+10. `git add` (`VERSION_FILES` + `LOCK_FILES`, which includes the refreshed
+    `reflexio.lock.json`) + `git commit -m "Release v$VERSION"`.
+11. `git tag -a v$VERSION`.
+12. `publish-npm` → `npm run build:opencode` + `npm publish --access public`.
+13. `git push --follow-tags`.
 
-### Vendor-mode exception: unpublished Reflexio update
+### Vendor mode: unpublished Reflexio update
 
-Use vendor mode only when claude-smart needs Reflexio changes that should not or
-cannot be published to PyPI first. This is npm-only because the generated vendor
-bundle is included in the npm tarball, not the PyPI wheel.
+claude-smart is distributed via npm only, so `make release-npm` (aliased as
+`make release`) is always the release command. Use vendor mode when claude-smart
+needs Reflexio changes that should not or cannot be published to PyPI first: the
+generated Reflexio bundle is shipped inside the npm tarball rather than pulled
+from PyPI as a dependency.
 
 ```bash
 bash scripts/release-with-reflexio.sh
 make release-npm VERSION=<new-claude-smart-version>
 ```
 
-The helper exports the committed Reflexio `HEAD` into `plugin/vendor/reflexio`,
+The helper copies the committed Reflexio `HEAD` into `plugin/vendor/reflexio`,
 updates and commits `reflexio.lock.json`, and leaves the generated vendor bundle
-in the working tree. Keep `plugin/vendor/reflexio` in place until npm publish
-completes. `make release` intentionally refuses to publish PyPI while
-`reflexio.lock.json` says `source=vendor`.
+in the working tree. `make release-npm` then self-vendors again via its
+`vendor-release` step (`scripts/vendor-reflexio.py --require-clean --write`),
+which refuses a dirty Reflexio tree so the vendored bundle always equals the
+committed Reflexio `HEAD` — a stale bundle can never block a release. Keep
+`plugin/vendor/reflexio` in place until npm publish completes.
 
 Because publish happens **before** the push, a registry failure (e.g. auth expired) leaves the commit and tag local — you can fix the cause and re-run `make publish && git push --follow-tags` without re-bumping.
 
@@ -278,14 +292,10 @@ make bump VERSION=0.1.1
 git diff                                          # inspect
 git commit -am "Release v0.1.1"
 git tag -a v0.1.1 -m "Release v0.1.1"
-make publish                                      # both registries
+make publish                                      # npm publish (== publish-npm)
 git push --follow-tags
 
-# Only one registry (e.g. if the other published successfully and you're retrying).
-make publish-npm
-make publish-pypi
-
-# Vendor-mode Reflexio release (npm only).
+# Full vendor-and-release in one step (npm only).
 make release-npm VERSION=0.1.1
 
 # Preview without uploading anything.
@@ -299,7 +309,7 @@ make publish-dry
 Once published, end users update to the latest version with either:
 
 ```bash
-npx claude-smart update     # or: uvx claude-smart update
+npx claude-smart update
 ```
 
 Both wrap `claude plugin update claude-smart@reflexioai`. Users restart Claude Code to apply. Codex users rerun `npx claude-smart install --host codex`, then restart Codex after `/plugins` has upgraded the installed plugin.
@@ -322,9 +332,6 @@ Before running `make release`:
 
 **`npm publish` fails with `403 Forbidden`.**
 Usually means the version already exists. Check `npm view claude-smart versions`. npm does not allow re-uploading the same version — bump and re-release.
-
-**`uv publish` fails with `400 File already exists`.**
-Same as above for PyPI. Bump and re-release.
 
 **`uv build` produces a wheel that fails to install with `No matching distribution found for reflexio-ai`.**
 The committed `plugin/pyproject.toml` must resolve `reflexio-ai` from PyPI. If this release only needs Reflexio through the npm plugin artifact, use vendor mode instead of raising the PyPI dependency to an unpublished Reflexio version:
@@ -360,7 +367,7 @@ git commit -m "Sync Reflexio release metadata"
 **`make release` committed and tagged but `npm publish` failed after.**
 `publish` runs before `git push --follow-tags`, so nothing was pushed. Fix the cause (auth, network, registry), then:
 ```bash
-make publish           # retry both, or publish-npm / publish-pypi individually
+make publish           # re-runs npm publish
 git push --follow-tags
 ```
 If you need to *unwind* the local commit and tag:
@@ -377,12 +384,18 @@ rm -f package.json.bak pyproject.toml.bak .claude-plugin/*.bak
 
 ## Developing locally
 
-There is one local test path: build the npm tarball from this checkout and install it. The tarball bundles the plugin (and, in vendor mode, a Reflexio source snapshot), so installing it exercises your local plugin code end-to-end on both hosts.
+There is one local test path: build the npm tarball from this checkout and install it. The tarball bundles the plugin plus a Reflexio source snapshot, so installing it exercises your local plugin code end-to-end on both hosts.
 
 ```bash
 make package
 # → prints the absolute path of the resulting claude-smart-<version>.tgz
 ```
+
+`make package` vendors the **local Reflexio working tree** for testing:
+`python3 scripts/vendor-reflexio.py --bundle-only --write` then `npm pack`.
+Uncommitted Reflexio edits **are** included, it does not require a PyPI-published
+Reflexio version, and it does not touch `reflexio.lock.json` (`--bundle-only`
+regenerates only the bundle).
 
 Install the tarball globally and run the host installer:
 
@@ -422,7 +435,7 @@ Do **not** use `claude-smart update` for this loop — it wraps `claude plugin u
 
 For Reflexio backend changes, edit `open_source/reflexio/` and either:
 - Publish `reflexio-ai` to PyPI and use [Path B](#path-b-release-claude-smart-with-a-published-reflexio-update), or
-- Use [vendor mode](#vendor-mode-exception-unpublished-reflexio-update) — `make package` then bundles the local Reflexio source into `plugin/vendor/reflexio` so the tarball install picks it up.
+- Use [vendor mode](#vendor-mode-unpublished-reflexio-update) — `make package` bundles the local Reflexio working tree into `plugin/vendor/reflexio` so the tarball install picks it up (uncommitted edits included).
 
 What's picked up after each reinstall + host restart:
 

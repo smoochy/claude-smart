@@ -1333,7 +1333,17 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text()
 
     assert "plugin/vendor/reflexio" in vendor_script
-    assert 'git", "-C", str(reflexio_path), "archive"' in vendor_script
+    # Vendoring copies the current reflexio working tree (captures uncommitted
+    # edits for `make package`); release passes --require-clean so the tree == HEAD.
+    assert "def copy_worktree(" in vendor_script
+    assert "shutil.copytree(src, dest, ignore=ignore_vendor_entries)" in vendor_script
+    # Include paths are validated to stay inside the checkout and symlinks are
+    # dropped, so a metadata-driven include cannot escape into the npm payload.
+    assert "def safe_vendor_src(" in vendor_script
+    assert "escapes the Reflexio checkout" in vendor_script
+    assert "is_symlink()" in vendor_script
+    assert "--require-clean" in vendor_script
+    assert "--bundle-only" in vendor_script
     assert '"source": "vendor"' in vendor_script
     assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
     assert "package_include_paths" in vendor_script
@@ -1805,11 +1815,13 @@ def test_vendor_release_is_npm_only() -> None:
     developer = (REPO_ROOT / "DEVELOPER.md").read_text()
 
     assert "release-npm:" in makefile
-    assert "check-pypi-compatible-reflexio:" in makefile
-    assert "source=vendor" in makefile
-    assert "make release-npm VERSION=..." in makefile
+    # claude-smart is npm-only: its own PyPI wheel publish (uvx) was removed.
+    assert "publish-pypi" not in makefile
+    assert "check-pypi-compatible-reflexio" not in makefile
+    # release-npm self-vendors the current (clean) reflexio submodule before publishing.
+    assert "vendor-release:" in makefile
+    assert "python3 scripts/vendor-reflexio.py --require-clean --write" in makefile
     assert "make release-npm VERSION=<new-claude-smart-version>" in developer
-    assert "intentionally refuses to publish PyPI" in developer
 
 
 def test_backend_service_configures_shared_embedding_daemon() -> None:

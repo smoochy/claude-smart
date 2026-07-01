@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="plugin/pyproject.toml">
-    <img src="https://img.shields.io/badge/version-0.2.46-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.2.47-green.svg" alt="Version">
   </a>
   <a href="plugin/pyproject.toml">
     <img src="https://img.shields.io/badge/python-%3E%3D3.12-brightgreen.svg" alt="Python">
@@ -61,12 +61,12 @@
 ### Claude Code
 
 ```bash
-npx claude-smart install     # or: uvx claude-smart install
+npx claude-smart install
 ```
 
 Then restart Claude Code.
 
-Requires Node.js (for `npx`) or uv (for `uvx`) to already exist.
+Requires Node.js (for `npx`) to already exist.
 
 Alternatively, install via Claude Code's plugin marketplace:
 
@@ -78,7 +78,7 @@ claude plugin install claude-smart@reflexioai
 To uninstall:
 
 ```bash
-npx claude-smart uninstall     # or: uvx claude-smart uninstall
+npx claude-smart uninstall
 ```
 
 Or, if installed via the plugin marketplace:
