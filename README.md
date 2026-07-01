@@ -28,7 +28,7 @@
     <img src="https://img.shields.io/badge/Discord-Join%20community-5865F2?logo=discord&logoColor=white" alt="Discord">
   </a>
   <a href="https://github.com/ReflexioAI/reflexio">
-    <img src="https://img.shields.io/github/stars/ReflexioAI/reflexio?style=flat&logo=github&label=Star%20reflexio&color=yellow" alt="Star reflexio on GitHub">
+    <img src="https://img.shields.io/github/stars/ReflexioAI/reflexio?style=flat&logo=github&label=Star%20reflexio&color=yellow&cacheSeconds=3600" alt="Star reflexio on GitHub">
   </a>
 </p>
 
