@@ -78,6 +78,7 @@ case "$REFLEXIO_RELEASE_SOURCE" in
     ensure_commit_inputs_clean "${COMMIT_FILES[@]}"
     "$PYTHON_BIN" scripts/vendor-reflexio.py \
       --reflexio-path "$REFLEXIO_PATH" \
+      --require-clean \
       --write
     uv sync --project plugin --locked
     PLUGIN_PYTHON="$REPO_ROOT/plugin/.venv/bin/python"

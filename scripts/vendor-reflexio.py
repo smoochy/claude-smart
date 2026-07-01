@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Vendor a Reflexio checkout into the npm release payload.
+"""Vendor the current Reflexio checkout into the npm release payload.
 
 This keeps claude-smart and Reflexio as independent repositories during normal
 development, while allowing a claude-smart npm release to carry an exact
 Reflexio source snapshot without requiring user machines to clone GitHub.
+
+Both `make package` (local testing) and `make release-npm` vendor the Reflexio
+submodule **as it is right now** — the working tree, so uncommitted edits are
+captured too. `make release-npm` passes ``--require-clean`` so the vendored tree
+equals the committed HEAD (reproducible, traceable via the recorded commit),
+while `make package` allows a dirty tree and passes ``--bundle-only`` so it never
+rewrites the tracked reflexio.lock.json.
 """
 
 from __future__ import annotations
@@ -13,11 +20,10 @@ import json
 import shutil
 import subprocess
 import sys
-import tarfile
-import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 PACKAGE_NAME = "reflexio-ai"
 REPO_URL = "https://github.com/ReflexioAI/reflexio.git"
@@ -25,7 +31,7 @@ VENDOR_PATH = Path("plugin/vendor/reflexio")
 DEFAULT_INCLUDE = ["pyproject.toml", "README.md", "LICENSE", ".env.example", "reflexio"]
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -111,34 +117,52 @@ def current_dependency(repo_root: Path) -> str:
     return dependency
 
 
-def export_reflexio(
-    reflexio_path: Path,
-    commit: str,
-    vendor_dest: Path,
-    files: list[str],
-) -> None:
-    with tempfile.TemporaryDirectory(prefix="claude-smart-reflexio-") as tmp:
-        archive = Path(tmp) / "reflexio.tar"
-        try:
-            with archive.open("wb") as handle:
-                subprocess.run(
-                    ["git", "-C", str(reflexio_path), "archive", "--format=tar", commit, *files],
-                    check=True,
-                    stdout=handle,
-                    stderr=subprocess.PIPE,
-                    text=False,
-                )
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or b"").decode(errors="replace").strip()
-            fail(f"git archive failed: {detail or f'exit {exc.returncode}'}")
-        if vendor_dest.exists():
-            shutil.rmtree(vendor_dest)
-        vendor_dest.mkdir(parents=True)
-        with tarfile.open(archive) as tar:
-            if sys.version_info >= (3, 12):
-                tar.extractall(vendor_dest, filter="data")
-            else:
-                tar.extractall(vendor_dest)
+VENDOR_IGNORE = shutil.ignore_patterns(
+    ".git",
+    ".venv",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "*.egg-info",
+)
+REQUIRED_VENDOR_PATHS = ("pyproject.toml", "reflexio")
+
+
+def copy_worktree(reflexio_path: Path, vendor_dest: Path, files: list[str]) -> None:
+    """Copy the current Reflexio working tree into the vendor destination.
+
+    Unlike a ``git archive`` of HEAD, this captures uncommitted edits too, so
+    ``make package`` can vendor local Reflexio changes for testing. Callers that
+    need reproducibility (release) pass ``--require-clean`` so the working tree
+    equals the committed HEAD.
+
+    Args:
+        reflexio_path (Path): Root of the Reflexio checkout to copy from.
+        vendor_dest (Path): Destination directory (wiped and recreated).
+        files (list[str]): Top-level paths to include, relative to reflexio_path.
+
+    Raises:
+        SystemExit: If a required package path (pyproject.toml, reflexio) is missing.
+    """
+    for required in REQUIRED_VENDOR_PATHS:
+        if not (reflexio_path / required).exists():
+            fail(f"Reflexio checkout is missing required path: {required}")
+    if vendor_dest.exists():
+        shutil.rmtree(vendor_dest)
+    vendor_dest.mkdir(parents=True)
+    for rel in files:
+        src = reflexio_path / rel
+        if not src.exists():
+            continue
+        dest = vendor_dest / rel
+        if src.is_dir():
+            shutil.copytree(src, dest, ignore=VENDOR_IGNORE)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
 
 
 def existing_updated_at(lock_file: Path, payload: dict[str, str]) -> str | None:
@@ -195,9 +219,17 @@ def parse_args() -> argparse.Namespace:
         help="Path to Reflexio checkout (default: ../reflexio relative to claude-smart)",
     )
     parser.add_argument(
-        "--allow-dirty",
+        "--require-clean",
         action="store_true",
-        help="Allow uncommitted Reflexio changes. The committed HEAD is still what gets vendored.",
+        help=(
+            "Fail if the Reflexio checkout has uncommitted changes. Used by release so the "
+            "vendored working tree equals the committed HEAD. Omit for `make package`."
+        ),
+    )
+    parser.add_argument(
+        "--bundle-only",
+        action="store_true",
+        help="Regenerate only the vendor bundle; do not write reflexio.lock.json (local testing).",
     )
     parser.add_argument(
         "--require-origin-main",
@@ -221,13 +253,12 @@ def main() -> int:
         fail(f"Reflexio path does not exist: {reflexio_path}")
 
     package, version = read_project_metadata(reflexio_path)
-    if not args.allow_dirty:
-        dirty = run_git(reflexio_path, "status", "--porcelain")
-        if dirty:
-            fail(
-                f"Reflexio checkout has uncommitted changes at {reflexio_path}. "
-                "Commit/stash them or pass --allow-dirty."
-            )
+    dirty = run_git(reflexio_path, "status", "--porcelain")
+    if args.require_clean and dirty:
+        fail(
+            f"Reflexio checkout has uncommitted changes at {reflexio_path}. "
+            "Commit/stash them or drop --require-clean (only `make package` allows a dirty tree)."
+        )
     commit = run_git(reflexio_path, "rev-parse", "HEAD")
     if args.require_origin_main:
         run_git(reflexio_path, "fetch", "origin", "main", capture=False)
@@ -243,7 +274,15 @@ def main() -> int:
     include_paths = package_include_paths(reflexio_path)
     vendor_dest = repo_root / VENDOR_PATH
     lock_file = repo_root / "reflexio.lock.json"
-    lock_changed = write_lock(lock_file, version, commit, dependency, write=args.write)
+    if not args.bundle_only and dirty:
+        print(
+            "warning: Reflexio checkout is dirty; reflexio.lock.json will record HEAD "
+            f"({commit[:12]}), which may not match the vendored working tree.",
+            file=sys.stderr,
+        )
+    lock_changed = (
+        None if args.bundle_only else write_lock(lock_file, version, commit, dependency, write=args.write)
+    )
 
     print(f"Reflexio path: {reflexio_path}")
     print(f"Reflexio package: {package}")
@@ -256,13 +295,19 @@ def main() -> int:
         print(f"  {include_path}")
 
     if args.write:
-        export_reflexio(reflexio_path, commit, vendor_dest, include_paths)
+        copy_worktree(reflexio_path, vendor_dest, include_paths)
         print(f"Updated: {VENDOR_PATH}")
-        print(f"{'Updated' if lock_changed else 'Unchanged'}: reflexio.lock.json")
+        if args.bundle_only:
+            print("Skipped: reflexio.lock.json (--bundle-only)")
+        else:
+            print(f"{'Updated' if lock_changed else 'Unchanged'}: reflexio.lock.json")
     else:
         print("Dry run only; no files changed.")
         print(f"Would update: {VENDOR_PATH}")
-        print(f"Would update: {'reflexio.lock.json' if lock_changed else 'no lock change'}")
+        if args.bundle_only:
+            print("Would skip: reflexio.lock.json (--bundle-only)")
+        else:
+            print(f"Would update: {'reflexio.lock.json' if lock_changed else 'no lock change'}")
     return 0
 
 

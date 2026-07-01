@@ -2,7 +2,7 @@
 
 Self-improving [Claude Code](https://claude.com/claude-code), Codex, and OpenCode plugin — turns corrections and successful workflows into durable Preferences, Project-specific skills, and Shared skills that future sessions follow, via [reflexio](https://github.com/ReflexioAI/reflexio).
 
-This directory is the published Python package (`claude-smart` on PyPI) and the Claude Code/Codex/OpenCode plugin payload shipped through the marketplace and npm. For the project overview, install instructions, benchmarks, and feature walkthrough, see the [top-level README](https://github.com/ReflexioAI/claude-smart#readme).
+This directory is the Claude Code/Codex/OpenCode plugin payload shipped through the marketplace and the `claude-smart` npm package. For the project overview, install instructions, benchmarks, and feature walkthrough, see the [top-level README](https://github.com/ReflexioAI/claude-smart#readme).
 
 ## Install
 
@@ -15,8 +15,7 @@ claude plugin install claude-smart@reflexioai
 
 The Setup hook bootstraps `uv`, Python 3.12, and a private Node.js/npm runtime
 under `~/.claude-smart/` when they are missing. If Node.js is already installed,
-`npx claude-smart install` is equivalent; if uv is already installed,
-`uvx claude-smart install` is equivalent.
+`npx claude-smart install` is equivalent.
 
 Add `--read-only` to either install command to skip hooks that publish
 interactions for learning.
@@ -56,10 +55,10 @@ Preferences, Project-specific skills, and Shared skills as Claude Code and Codex
 claude plugin uninstall claude-smart@reflexioai
 ```
 
-Or, if Node.js or uv is already installed:
+Or, if Node.js is already installed:
 
 ```bash
-npx claude-smart uninstall   # or: uvx claude-smart uninstall
+npx claude-smart uninstall
 ```
 
 ### Codex

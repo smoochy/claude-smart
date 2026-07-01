@@ -38,9 +38,13 @@ dependencies = [
     "sqlite-vec>=0.1.6",
 ]
 
+# claude-smart is distributed via npm only (see bin/claude-smart.js); it is not
+# published to PyPI, so there is no `claude-smart` console script / uvx entry
+# point. These two scripts are resolved by the runtime from the plugin venv
+# (session_start.py locates claude-smart-optimizer-assistant; the hook is invoked
+# via `python -m claude_smart.hook`), so they stay.
 [project.scripts]
 claude-smart-hook = "claude_smart.hook:main"
-claude-smart = "claude_smart.cli:main"
 claude-smart-optimizer-assistant = "claude_smart.optimizer_assistant:main"
 
 [build-system]

@@ -61,12 +61,12 @@
 ### Claude Code
 
 ```bash
-npx claude-smart install     # or: uvx claude-smart install
+npx claude-smart install
 ```
 
 Then restart Claude Code.
 
-Requires Node.js (for `npx`) or uv (for `uvx`) to already exist.
+Requires Node.js (for `npx`) to already exist.
 
 Alternatively, install via Claude Code's plugin marketplace:
 
@@ -78,7 +78,7 @@ claude plugin install claude-smart@reflexioai
 To uninstall:
 
 ```bash
-npx claude-smart uninstall     # or: uvx claude-smart uninstall
+npx claude-smart uninstall
 ```
 
 Or, if installed via the plugin marketplace:
