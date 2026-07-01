@@ -1336,7 +1336,12 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     # Vendoring copies the current reflexio working tree (captures uncommitted
     # edits for `make package`); release passes --require-clean so the tree == HEAD.
     assert "def copy_worktree(" in vendor_script
-    assert "shutil.copytree(src, dest, ignore=VENDOR_IGNORE)" in vendor_script
+    assert "shutil.copytree(src, dest, ignore=ignore_vendor_entries)" in vendor_script
+    # Include paths are validated to stay inside the checkout and symlinks are
+    # dropped, so a metadata-driven include cannot escape into the npm payload.
+    assert "def safe_vendor_src(" in vendor_script
+    assert "escapes the Reflexio checkout" in vendor_script
+    assert "is_symlink()" in vendor_script
     assert "--require-clean" in vendor_script
     assert "--bundle-only" in vendor_script
     assert '"source": "vendor"' in vendor_script

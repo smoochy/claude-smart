@@ -166,7 +166,8 @@ Don't edit these by hand — use `make bump`.
 ### Prerequisites — one-time setup
 
 1. **npm**: `npm login` (writes a token to `~/.npmrc`). claude-smart is distributed via npm only — there is no PyPI publish of claude-smart itself.
-2. **git**: push access to `origin` for the tag push at the end of `make release`.
+2. **uv** + **Python 3.12**: on `PATH`. The release flow shells out to `uv` (e.g. `bump` regenerates the standalone `plugin/uv.lock` via `scripts/standalone-lock.sh`; `scripts/release-with-reflexio.sh` runs `uv sync`/`uv pip install` into the plugin `.venv`) and to `python3` (`scripts/vendor-reflexio.py`, `scripts/check-reflexio-lock.py`).
+3. **git**: push access to `origin` for the tag push at the end of `make release`.
 
 ### Path A: release claude-smart only
 

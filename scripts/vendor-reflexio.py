@@ -131,6 +131,49 @@ VENDOR_IGNORE = shutil.ignore_patterns(
 REQUIRED_VENDOR_PATHS = ("pyproject.toml", "reflexio")
 
 
+def safe_vendor_src(reflexio_path: Path, root: Path, rel: str) -> Path:
+    """Resolve an include entry to a path guaranteed to sit inside the checkout.
+
+    The include list is metadata-driven (Reflexio's own pyproject sdist config
+    plus defaults), so guard against a malformed or hostile entry escaping the
+    checkout via an absolute path, ``..`` traversal, or a symlinked top-level
+    entry before it is copied into the published npm payload.
+
+    Args:
+        reflexio_path (Path): Root of the Reflexio checkout.
+        root (Path): ``reflexio_path`` resolved (passed in to avoid re-resolving).
+        rel (str): Include entry relative to the checkout root.
+
+    Returns:
+        Path: ``reflexio_path / rel``, validated to stay within the checkout.
+
+    Raises:
+        SystemExit: If the entry is absolute, contains ``..``, or resolves outside.
+    """
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        fail(f"vendored include path must stay inside the Reflexio checkout: {rel!r}")
+    src = reflexio_path / rel_path
+    resolved = src.resolve()
+    if resolved != root and root not in resolved.parents:
+        fail(f"vendored include path escapes the Reflexio checkout: {rel!r}")
+    return src
+
+
+def ignore_vendor_entries(src_dir: str, names: list[str]) -> set[str]:
+    """copytree ignore filter: drop the usual junk plus any symlink.
+
+    Dropping symlinks (rather than following them) keeps a link inside the
+    Reflexio tree from dereferencing an out-of-checkout target into the vendored
+    bundle. This matches the old ``git archive`` behaviour of never copying
+    external file contents into the release payload.
+    """
+    ignored = set(VENDOR_IGNORE(src_dir, names))
+    src_path = Path(src_dir)
+    ignored.update(name for name in names if (src_path / name).is_symlink())
+    return ignored
+
+
 def copy_worktree(reflexio_path: Path, vendor_dest: Path, files: list[str]) -> None:
     """Copy the current Reflexio working tree into the vendor destination.
 
@@ -147,6 +190,7 @@ def copy_worktree(reflexio_path: Path, vendor_dest: Path, files: list[str]) -> N
     Raises:
         SystemExit: If a required package path (pyproject.toml, reflexio) is missing.
     """
+    root = reflexio_path.resolve()
     for required in REQUIRED_VENDOR_PATHS:
         if not (reflexio_path / required).exists():
             fail(f"Reflexio checkout is missing required path: {required}")
@@ -154,12 +198,14 @@ def copy_worktree(reflexio_path: Path, vendor_dest: Path, files: list[str]) -> N
         shutil.rmtree(vendor_dest)
     vendor_dest.mkdir(parents=True)
     for rel in files:
-        src = reflexio_path / rel
+        src = safe_vendor_src(reflexio_path, root, rel)
         if not src.exists():
             continue
         dest = vendor_dest / rel
         if src.is_dir():
-            shutil.copytree(src, dest, ignore=VENDOR_IGNORE)
+            # ignore_symlinks drops any symlink so the metadata-driven include
+            # list cannot dereference a link into the published npm payload.
+            shutil.copytree(src, dest, ignore=ignore_vendor_entries)
         else:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
