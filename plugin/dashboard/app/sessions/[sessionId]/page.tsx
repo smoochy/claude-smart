@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { type ReactNode, use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -22,6 +22,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import type { CitedItem, SessionDetail } from "@/lib/types";
+
+const MARKDOWN_LINK_PATTERN =
+  /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g;
 
 export default function InteractionDetailPage({
   params,
@@ -204,7 +207,7 @@ export default function InteractionDetailPage({
                     </div>
                   </header>
                   <pre className="whitespace-pre-wrap break-words text-sm font-sans leading-relaxed">
-                    {turn.content}
+                    <MarkdownLinkedText text={turn.content} />
                   </pre>
                   {turn.user_action_description && (
                     <p className="text-xs text-muted-foreground mt-2 italic">
@@ -226,6 +229,37 @@ export default function InteractionDetailPage({
       </div>
     </div>
   );
+}
+
+function MarkdownLinkedText({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+
+  for (const match of text.matchAll(MARKDOWN_LINK_PATTERN)) {
+    const matchIndex = match.index ?? 0;
+    const [raw, label, href] = match;
+    if (matchIndex > cursor) {
+      parts.push(text.slice(cursor, matchIndex));
+    }
+    parts.push(
+      <a
+        key={`${matchIndex}-${href}`}
+        href={href}
+        target={href.startsWith("/") ? undefined : "_blank"}
+        rel={href.startsWith("/") ? undefined : "noopener noreferrer"}
+        className="font-medium text-primary underline decoration-primary/35 underline-offset-2 hover:decoration-primary"
+      >
+        {label}
+      </a>,
+    );
+    cursor = matchIndex + raw.length;
+  }
+
+  if (parts.length === 0) return text;
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
+  }
+  return <>{parts}</>;
 }
 
 function CitedItemsRow({ items }: { items: CitedItem[] }) {
