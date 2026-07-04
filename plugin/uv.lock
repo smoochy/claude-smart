@@ -476,7 +476,7 @@ wheels = [
 
 [[package]]
 name = "claude-smart"
-version = "0.2.47"
+version = "0.2.48"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
