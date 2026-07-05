@@ -110,11 +110,12 @@ def test_returns_false_for_interactive_entrypoint(
     assert is_internal_invocation({}) is False
 
 
-def test_returns_false_for_desktop_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("entrypoint", ["claude-desktop", "claude-vscode", "claude-jetbrains"])
+def test_returns_false_for_interactive_entrypoints(
+    monkeypatch: pytest.MonkeyPatch, entrypoint: str
 ) -> None:
     monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", entrypoint)
     assert is_internal_invocation({}) is False
 
 
