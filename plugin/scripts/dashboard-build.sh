@@ -92,7 +92,10 @@ if ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
     # written its pid yet, or a holder crashed in that window. Tell them
     # apart by how long the lock dir has existed.
     lock_now=$(date +%s 2>/dev/null || echo 0)
-    lock_born=$(stat -c %Y "$BUILD_LOCK_DIR" 2>/dev/null || echo "$lock_now")
+    # stat -c is GNU (Linux, Git Bash); stat -f is BSD (macOS). Try both.
+    lock_born=$(stat -c %Y "$BUILD_LOCK_DIR" 2>/dev/null \
+      || stat -f %m "$BUILD_LOCK_DIR" 2>/dev/null \
+      || echo "$lock_now")
     if [ "$((lock_now - lock_born))" -lt "$LOCK_ACQUIRE_GRACE" ]; then
       log "dashboard build: peer acquiring lock; backing off"
       exit 0
