@@ -4,8 +4,9 @@
  * CLIs. Both Claude Code and Codex install from the bundled marketplace in
  * this npm package: Claude Code registers the package root as a local
  * marketplace, and Codex copies the bundled plugin into its own marketplace
- * wrapper. Both paths seed ~/.reflexio/.env with the two local-provider flags
- * so reflexio can route generation through local tools with no API key.
+ * wrapper. The npm path reads setup/bootstrap config from ~/.reflexio/.env and
+ * seeds runtime ~/.claude-smart/.env with local-provider defaults so reflexio
+ * can route generation through local tools with no API key.
  * Managed/read-only/global setup is handled by `npx claude-smart setup`,
  * which writes ~/.reflexio/.env before running this installer.
  *
@@ -44,15 +45,24 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
-const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const REFLEXIO_SETUP_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
+const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
+const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
+const HOST_CLAUDE_CODE = "claude-code";
+const HOST_CODEX = "codex";
+const HOST_OPENCODE = "opencode";
+const SUPPORTED_HOSTS = [HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE];
+const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
+const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
@@ -96,7 +106,7 @@ const CODEX_REQUIRED_FILES = [
   "plugin/scripts/_codex_env.sh",
 ];
 const CODEX_CLI_TIMEOUT_MS = 30_000;
-const PLUGIN_SERVICE_TIMEOUT_MS = 15_000;
+const PLUGIN_SERVICE_TIMEOUT_MS = 45_000;
 const COPYTREE_IGNORE_NAMES = new Set([
   "__pycache__",
   ".venv",
@@ -108,7 +118,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
 ]);
 const LOCAL_DEFAULT_ENV_ENTRIES = [
   [
-    "# Route reflexio generation through the local Claude Code CLI",
+    "# Route reflexio generation through the configured local host CLI",
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
     "1",
   ],
@@ -118,13 +128,17 @@ const LOCAL_DEFAULT_ENV_ENTRIES = [
     "1",
   ],
   [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
+  [null, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST],
 ];
+const ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = new Set([
+  CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+  CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+]);
 const LOCAL_MODE_PRUNE_KEYS = new Set([
   "REFLEXIO_URL",
   "REFLEXIO_API_KEY",
   REFLEXIO_USER_ID_ENV,
 ]);
-
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
   if (COPYTREE_IGNORE_NAMES.has(base)) return false;
@@ -254,19 +268,42 @@ function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function ensureLocalReflexioEnv() {
-  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
-  const existing = existsSync(REFLEXIO_ENV_PATH)
-    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
+function resolveLocalEnvDefault(key, fallback, installHost) {
+  if (key === CLAUDE_SMART_HOST_ENV) return installHost;
+  if (ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS.has(key)) {
+    const explicit = (process.env[key] || "").trim();
+    if (explicit) return explicit;
+  }
+  return fallback;
+}
+
+function ensureLocalEnvFile(path, installHost) {
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = existsSync(path)
+    ? readFileSync(path, "utf8")
     : "";
   const present = new Set();
   const keptLines = [];
   let pruned = false;
+  let changed = false;
+  let hostWritten = false;
   for (const line of existing.split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
     if (parsed) {
       if (LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
         pruned = true;
+        continue;
+      }
+      if (parsed.key === CLAUDE_SMART_HOST_ENV) {
+        present.add(parsed.key);
+        if (!hostWritten) {
+          const replacement = `${CLAUDE_SMART_HOST_ENV}=${escapeEnvValue(installHost)}`;
+          keptLines.push(replacement);
+          hostWritten = true;
+          if (line !== replacement || parsed.value !== installHost) changed = true;
+        } else {
+          changed = true;
+        }
         continue;
       }
       present.add(parsed.key);
@@ -278,27 +315,60 @@ function ensureLocalReflexioEnv() {
   const added = [];
   for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
     if (present.has(key)) continue;
+    const effectiveValue = resolveLocalEnvDefault(key, value, installHost);
     if (comment) additions.push(comment);
     if (key === CLAUDE_SMART_READ_ONLY_ENV) {
-      additions.push(`${key}="${escapeEnvValue(value)}"`);
+      additions.push(`${key}="${escapeEnvValue(effectiveValue)}"`);
     } else {
-      additions.push(`${key}=${escapeEnvValue(value)}`);
+      additions.push(`${key}=${escapeEnvValue(effectiveValue)}`);
     }
     added.push(key);
   }
 
-  if (additions.length > 0 || pruned) {
+  if (additions.length > 0 || pruned || changed) {
     let content = keptLines.join("\n").replace(/\n*$/, "");
     if (additions.length > 0) {
       const prefix = content ? "\n" : "";
       content = content + prefix + additions.join("\n");
     }
-    writeFileSync(REFLEXIO_ENV_PATH, content ? `${content}\n` : "");
-  } else if (!existsSync(REFLEXIO_ENV_PATH)) {
-    writeFileSync(REFLEXIO_ENV_PATH, "");
+    writeFileSync(path, content ? `${content}\n` : "");
+  } else if (!existsSync(path)) {
+    writeFileSync(path, "");
   }
-  chmodSync(REFLEXIO_ENV_PATH, 0o600);
+  chmodSync(path, 0o600);
   return added;
+}
+
+function setEnvVars(path, values) {
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const seen = new Set();
+  const out = [];
+  for (const line of existing ? existing.split(/\r?\n/) : []) {
+    const parsed = parseEnvLine(line);
+    if (!parsed || !(parsed.key in values)) {
+      out.push(line);
+      continue;
+    }
+    out.push(`${parsed.key}="${escapeEnvValue(values[parsed.key])}"`);
+    seen.add(parsed.key);
+  }
+  const added = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (seen.has(key)) continue;
+    out.push(`${key}="${escapeEnvValue(value)}"`);
+    added.push(key);
+  }
+  const content = out.join("\n").replace(/\n*$/, "");
+  writeFileSync(path, content ? `${content}\n` : "");
+  chmodSync(path, 0o600);
+  return added;
+}
+
+function ensureLocalInstallEnvDefaults(installHost = DEFAULT_CLAUDE_SMART_HOST) {
+  const added = ensureLocalEnvFile(REFLEXIO_SETUP_ENV_PATH, installHost);
+  const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
+  return Array.from(new Set([...added, ...runtimeAdded]));
 }
 
 function maskSecret(value) {
@@ -308,12 +378,12 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
-function loadReflexioSetupEnv() {
+function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   let readOnlyValue = "";
   let fileApiKey = "";
   let fileUrl = "";
-  if (existsSync(REFLEXIO_ENV_PATH)) {
-    const text = readFileSync(REFLEXIO_ENV_PATH, "utf8");
+  if (existsSync(REFLEXIO_SETUP_ENV_PATH)) {
+    const text = readFileSync(REFLEXIO_SETUP_ENV_PATH, "utf8");
     for (const line of text.split(/\r?\n/)) {
       const parsed = parseEnvLine(line);
       if (!parsed) continue;
@@ -341,9 +411,9 @@ function loadReflexioSetupEnv() {
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
-    const added = ensureLocalReflexioEnv();
+    const added = ensureLocalInstallEnvDefaults(installHost);
     if (added.length > 0) {
-      process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
+      process.stdout.write(`Seeded ${REFLEXIO_SETUP_ENV_PATH} with ${added.join(", ")}.\n`);
     }
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
@@ -352,8 +422,8 @@ function loadReflexioSetupEnv() {
   return { readOnly };
 }
 
-function configureReflexioSetup() {
-  return loadReflexioSetupEnv();
+function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
+  return loadReflexioSetupEnv(installHost);
 }
 
 function stripJsonc(text) {
@@ -529,7 +599,7 @@ function hasExtractionProvider() {
   if ((process.env.REFLEXIO_API_KEY || "").trim()) return true;
   const cliPath = (process.env.CLAUDE_SMART_CLI_PATH || "").trim();
   if (cliPath && isExecutableFile(cliPath)) return true;
-  return hasCli("claude") || hasCli("codex") || hasCli("opencode");
+  return hasCli("claude") || hasCli("codex") || Boolean(resolveOpenCodePath());
 }
 
 function isExecutableFile(path) {
@@ -548,6 +618,94 @@ function extractionProviderError() {
     "Run `npx claude-smart setup` to configure Reflexio, or install " +
     "OpenCode, Claude Code, or Codex so local extraction can use a supported CLI.\n"
   );
+}
+
+function hasOpenCodeCli() {
+  return Boolean(resolveOpenCodePath());
+}
+
+function resolveOpenCodePath() {
+  const opencodePath = (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "").trim();
+  if (opencodePath && isExecutableFile(opencodePath)) return opencodePath;
+  return resolveCommand(isWindows() ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]);
+}
+
+function persistOpenCodePath() {
+  const resolved = resolveOpenCodePath();
+  if (!resolved) return [];
+  process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = resolved;
+  return setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_OPENCODE_PATH_ENV]: resolved });
+}
+
+const WINDOWS_SYSTEM_BASH_SUFFIXES = [
+  "\\windows\\system32\\bash.exe",
+  "\\windows\\sysnative\\bash.exe",
+  "\\windows\\syswow64\\bash.exe",
+];
+
+function windowsPathText(path) {
+  return path.replace(/\//g, "\\").toLowerCase();
+}
+
+function isWindowsSystemBash(path) {
+  const normalized = windowsPathText(path);
+  return WINDOWS_SYSTEM_BASH_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function pathCommandCandidates(names) {
+  // Return every PATH match so Windows can skip System32 bash and still find Git Bash.
+  const delimiter = isWindows() ? ";" : ":";
+  const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+  const candidates = [];
+  for (const dir of pathParts) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+function firstUsableBash(candidates) {
+  for (const candidate of candidates) {
+    const resolved = existsSync(candidate) ? candidate : resolveCommand([candidate]);
+    if (resolved && !isWindowsSystemBash(resolved)) return resolved;
+  }
+  return null;
+}
+
+function resolveUsableBash() {
+  if (!isWindows()) return resolveCommand(["bash"]);
+  const sources = [];
+  const bashEnv = (process.env.BASH || "").trim();
+  if (bashEnv) sources.push([bashEnv]);
+  sources.push([
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+  ]);
+  sources.push(pathCommandCandidates(["bash.exe", "bash"]));
+  sources.push(["bash.exe", "bash"]);
+  for (const source of sources) {
+    const resolved = firstUsableBash(source);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function opencodePrerequisiteError() {
+  if (!hasOpenCodeCli()) {
+    return (
+      "error: OpenCode CLI not found on PATH. Install OpenCode first, " +
+      "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
+    );
+  }
+  if (isWindows() && !resolveUsableBash()) {
+    return (
+      "error: Git Bash is required for claude-smart OpenCode support on Windows. " +
+      "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
+    );
+  }
+  return null;
 }
 
 function findClaudeCodePluginRoot() {
@@ -789,11 +947,7 @@ async function bootstrapClaudeCodeInstall() {
   if (code !== 0) {
     throw new Error(`smart-install.sh failed in ${pluginRoot}`);
   }
-  const failureMarker = join(CLAUDE_SMART_STATE_DIR, "install-failed");
-  if (existsSync(failureMarker)) {
-    const reason = readFileSync(failureMarker, "utf8").trim() || "unknown error";
-    throw new Error(reason);
-  }
+  throwIfInstallFailureMarker();
   return pluginRoot;
 }
 
@@ -870,8 +1024,14 @@ function runSilentStatus(command, args, options = {}) {
 function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
   const script = join(pluginRoot, "scripts", scriptName);
   if (!existsSync(script)) return false;
-  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
-  if (!bash) return false;
+  const bash = resolveUsableBash();
+  if (!bash) {
+    const reason = isWindows()
+      ? "Git Bash is required for claude-smart services on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL"
+      : "bash is required but was not found on PATH";
+    process.stderr.write(`warning: ${scriptName} ${subcommand} ${reason}; continuing.\n`);
+    return false;
+  }
   const result = spawnSync(bash, [script, subcommand], {
     cwd: pluginRoot,
     env: { ...runtimeEnv(), ...envOverrides },
@@ -1224,24 +1384,84 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
 }
 
 function ensurePluginRoot(pluginRoot) {
-  const reflexioDir = dirname(REFLEXIO_ENV_PATH);
-  const link = join(reflexioDir, "plugin-root");
+  const reflexioDir = dirname(REFLEXIO_SETUP_ENV_PATH);
+  const pluginRootLink = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
-  rmSync(link, { recursive: true, force: true });
+  let pathNotReplaceable = false;
   try {
-    require("fs").symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
+    const existing = lstatSync(pluginRootLink);
+    if (existing.isSymbolicLink() || existing.isFile()) {
+      rmSync(pluginRootLink, { recursive: true, force: true });
+    } else {
+      pathNotReplaceable = true;
+    }
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") pathNotReplaceable = true;
+  }
+  if (pathNotReplaceable) {
+    writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
+    return;
+  }
+  try {
+    symlinkSync(pluginRoot, pluginRootLink, isWindows() ? "junction" : "dir");
+    writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   } catch {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   }
+}
+
+function pluginPythonPath(pluginRoot) {
+  // Python venvs created by uv use Scripts/python.exe on Windows across x64/arm64.
+  return isWindows()
+    ? join(pluginRoot, ".venv", "Scripts", "python.exe")
+    : join(pluginRoot, ".venv", "bin", "python");
+}
+
+function installFailureReason() {
+  // smart-install.sh owns the install-failed marker format; Node surfaces the
+  // first line as the actionable reason and leaves fingerprint handling to shell.
+  const text = readFileSync(INSTALL_FAILURE_MARKER, "utf8");
+  const first = text.split(/\r?\n/, 1)[0].trim();
+  return first || "unknown error";
+}
+
+function throwIfInstallFailureMarker() {
+  if (existsSync(INSTALL_FAILURE_MARKER)) throw new Error(installFailureReason());
+}
+
+function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
+  if (!isWindows()) return;
+  // Reflexio owns local embeddings, but this installer is the first place a
+  // user sees whether the prepared Reflexio runtime can import onnxruntime.
+  const script = join(pluginRoot, "scripts", "smart-install.sh");
+  const bash = resolveUsableBash();
+  if (!bash) {
+    throw new Error(
+      "Git Bash is required for claude-smart dependency checks on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL.",
+    );
+  }
+  const result = spawnSync(bash, [script, "verify-windows-embedding"], {
+    cwd: pluginRoot,
+    env,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    const detail = result.error
+      ? result.error.message
+      : result.signal
+        ? `terminated by ${result.signal}`
+        : (result.stderr || "").trim() || `exited with status ${result.status}`;
+    throw new Error(`Windows local embedding preflight failed: ${detail}`);
+  }
+  throwIfInstallFailureMarker();
 }
 
 async function installVendoredReflexio(pluginRoot, uv, env) {
   const vendorRoot = join(pluginRoot, "vendor", "reflexio");
   if (!existsSync(join(vendorRoot, "pyproject.toml"))) return;
 
-  const pythonPath = isWindows()
-    ? join(pluginRoot, ".venv", "Scripts", "python.exe")
-    : join(pluginRoot, ".venv", "bin", "python");
+  const pythonPath = pluginPythonPath(pluginRoot);
   if (!existsSync(pythonPath)) {
     throw new Error(`plugin Python was not created by uv sync: ${pythonPath}`);
   }
@@ -1321,6 +1541,7 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
+  rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.patchCodexHooks !== false) {
     patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
@@ -1341,6 +1562,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   }
   await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
+  verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
@@ -1368,7 +1590,7 @@ function printHelp() {
       "Claude Code install:",
       "  1. claude plugin marketplace add <this package>",
       `  2. claude plugin install ${PLUGIN_SPEC}`,
-      "  3. Reads ~/.reflexio/.env when managed/read-only setup was configured.",
+      "  3. Reads setup/bootstrap config when managed/read-only setup was configured.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
@@ -1400,14 +1622,14 @@ function printHelp() {
 
 function parseHost(args) {
   const idx = args.indexOf("--host");
-  if (idx === -1) return "claude-code";
+  if (idx === -1) return DEFAULT_CLAUDE_SMART_HOST;
   const value = args[idx + 1];
   if (!value) {
-    process.stderr.write("error: --host requires a value: claude-code, codex, or opencode\n");
+    process.stderr.write(`error: --host requires a value: ${SUPPORTED_HOSTS.join(", ")}\n`);
     process.exit(1);
   }
-  if (value !== "claude-code" && value !== "codex" && value !== "opencode") {
-    process.stderr.write("error: --host must be claude-code, codex, or opencode\n");
+  if (!SUPPORTED_HOSTS.includes(value)) {
+    process.stderr.write(`error: --host must be ${SUPPORTED_HOSTS.join(", ")}\n`);
     process.exit(1);
   }
   return value;
@@ -1822,11 +2044,11 @@ function findCodexPluginRoot() {
 }
 
 async function runUpdate(args) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runUpdateCodex(args);
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runUpdateOpenCode(args);
     return;
   }
@@ -1854,11 +2076,11 @@ async function runUpdateOpenCode(args) {
 }
 
 async function runUninstall(args) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runUninstallCodex();
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runUninstallOpenCode(args);
     return;
   }
@@ -1908,11 +2130,11 @@ async function runSetup(args) {
 }
 
 async function runInstall(args, options = {}) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runInstallCodex(args);
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runInstallOpenCode(args);
     return;
   }
@@ -1926,7 +2148,7 @@ async function runInstall(args, options = {}) {
   }
 
   const source = PACKAGE_ROOT;
-  const setup = configureReflexioSetup();
+  const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
   const readOnly = setup.readOnly;
 
   const steps = [
@@ -1966,7 +2188,7 @@ async function runInstall(args, options = {}) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
-    if (startBackendService(pluginRoot, "claude-code")) {
+    if (startBackendService(pluginRoot, HOST_CLAUDE_CODE)) {
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(pluginRoot)) {
@@ -1998,7 +2220,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
-  const setup = configureReflexioSetup();
+  const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
   const marketplaceRoot = copyCodexMarketplace();
@@ -2049,7 +2271,7 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
-    if (startBackendService(cacheDir, "codex")) {
+    if (startBackendService(cacheDir, HOST_CODEX)) {
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(cacheDir)) {
@@ -2099,8 +2321,14 @@ async function runInstallCodex(args) {
 }
 
 async function runInstallOpenCode(args) {
-  const setup = configureReflexioSetup();
+  const prerequisiteError = opencodePrerequisiteError();
+  if (prerequisiteError) {
+    process.stderr.write(prerequisiteError);
+    process.exit(1);
+  }
+  const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
+  persistOpenCodePath();
   if (!hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());
     process.exit(1);
@@ -2139,7 +2367,7 @@ async function runInstallOpenCode(args) {
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
-  if (startBackendService(pluginRoot, "opencode")) {
+  if (startBackendService(pluginRoot, HOST_OPENCODE)) {
     process.stdout.write("Started claude-smart backend service.\n");
   }
   if (refreshDashboardService(pluginRoot)) {
@@ -2274,7 +2502,12 @@ module.exports = {
   opencodeLocalPluginSpec,
   installOpenCodePluginPackage,
   patchOpenCodePluginConfig,
+  parseHost,
   hasExtractionProvider,
+  hasOpenCodeCli,
+  persistOpenCodePath,
+  resolveOpenCodePath,
+  opencodePrerequisiteError,
   platformSupportError,
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,

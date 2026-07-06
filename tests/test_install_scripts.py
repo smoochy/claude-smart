@@ -76,8 +76,17 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
         "create_python() {\n"
         '  mkdir -p "$PWD/.venv/bin"\n'
-        f'  printf "#!/bin/sh\\nexec {shlex.quote(sys.executable)} \\"\\$@\\"\\n" > "$PWD/.venv/bin/python"\n'
+        '  mkdir -p "$PWD/.venv/Scripts"\n'
+        f"  cat > \"$PWD/.venv/bin/python\" <<'PYSH'\n"
+        "#!/bin/sh\n"
+        'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
+        '  exit "$CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS"\n'
+        "fi\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+        "PYSH\n"
+        '  cp "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
         '  chmod +x "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/Scripts/python.exe"\n'
         "}\n"
         'case "$*" in\n'
         '  "sync --locked --python 3.12 --quiet")\n'
@@ -517,13 +526,58 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
     assert 'touch "$REFLEXIO_ENV"' in script
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" in script
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in script
     assert "CLAUDE_SMART_READ_ONLY=0" in script
+    assert "CLAUDE_SMART_HOST=claude-code" in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
     assert "claude_smart_source_reflexio_env" in script
     assert "CLAUDE_SMART_READ_ONLY" in lib
     assert "REFLEXIO_USER_ID" in lib
+
+
+def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
+    python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n")
+    python_path.chmod(0o755)
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_is_windows() { return 0; }; "
+        f'claude_smart_python_imports "{tmp_path}" onnxruntime'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_python_import_probe_fails_when_module_import_fails(
+    tmp_path: Path,
+) -> None:
+    python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/usr/bin/env bash\ncat >/dev/null\nexit 1\n")
+    python_path.chmod(0o755)
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_is_windows() { return 0; }; "
+        f'claude_smart_python_imports "{tmp_path}" onnxruntime'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
 
 
 def test_reflexio_env_file_overrides_stale_managed_process_env(
@@ -579,6 +633,31 @@ def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "1"
+
+
+def test_reflexio_env_loader_exports_host_flag(tmp_path: Path) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('CLAUDE_SMART_HOST="opencode"\n')
+
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_source_reflexio_env; "
+        'printf "%s\\n" "${CLAUDE_SMART_HOST:-}"'
+    )
+    env = _isolated_env(tmp_path)
+    env.pop("CLAUDE_SMART_HOST", None)
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "opencode"
 
 
 def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess[str]:
@@ -780,13 +859,15 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
+    assert node is not None
 
     env_path = tmp_path / ".reflexio" / ".env"
+    claude_smart_env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        "installer.configureReflexioSetup();"
+        "installer.configureReflexioSetup('opencode');"
         "process.stdout.write(process.env.REFLEXIO_URL || '');"
     )
     env = _isolated_env(tmp_path)
@@ -803,13 +884,57 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert result.stdout.endswith(
         "CLAUDE_SMART_USE_LOCAL_CLI, "
-        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY.\n"
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY, "
+        "CLAUDE_SMART_HOST.\n"
     )
     env_text = env_path.read_text()
     assert "REFLEXIO_URL" not in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
+    assert "CLAUDE_SMART_HOST=opencode" in env_text
+    assert claude_smart_env_path.read_text() == env_text
+
+
+def test_node_installer_updates_existing_host_and_local_defaults(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    assert node is not None
+
+    env_path = tmp_path / ".reflexio" / ".env"
+    runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    runtime_env_path.parent.mkdir()
+    stale = "# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY=\"1\"\n"
+    env_path.write_text(stale)
+    runtime_env_path.write_text(stale)
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "installer.configureReflexioSetup('opencode');"
+    )
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_USE_LOCAL_EMBEDDING"] = "0"
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for path in (env_path, runtime_env_path):
+        text = path.read_text()
+        assert "# keep" in text
+        assert "CLAUDE_SMART_HOST=opencode" in text
+        assert "CLAUDE_SMART_HOST=codex" not in text
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+        assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 
 def test_node_installer_supports_managed_reflexio_setup() -> None:
@@ -822,7 +947,7 @@ def test_node_installer_supports_managed_reflexio_setup() -> None:
     assert '"--read-only"' not in installer
     assert "REFLEXIO_API_KEY" in installer
     assert "CLAUDE_SMART_MANAGED_SETUP" in installer
-    assert "configureReflexioSetup()" in installer
+    assert "configureReflexioSetup(" in installer
     assert "maskSecret(apiKey)" in installer
     script = SMART_INSTALL.read_text()
     assert "configured managed Reflexio" not in script
@@ -1117,6 +1242,7 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "dashboard_matches_current_root()" in dashboard
     assert "x-claude-smart-plugin-root" in dashboard
     assert "curl -sfI --connect-timeout 2 --max-time 5" in dashboard
+    assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in dashboard
     assert "normalize_identity_path()" in dashboard
     assert "cygpath -u" in dashboard
     assert 'expected_root="$(normalize_identity_path ' in dashboard
@@ -1133,20 +1259,29 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
 
     assert 'bash "$HERE/backend-service.sh" start' in smart_install
     assert "start_backend_service()" in smart_install
-    assert "if install_complete; then\n  start_backend_service" in smart_install
+    assert (
+        "if install_complete; then\n"
+        "  verify_windows_local_embedding_runtime\n"
+        "  start_backend_service"
+    ) in smart_install
     assert "Backend started; dashboard auto-starts on session start." in smart_install
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer
+    assert "const bash = resolveUsableBash();" in node_installer
+    assert "Git Bash is required for claude-smart services on Windows" in node_installer
+    assert "bash is required but was not found on PATH" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
-    assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
+    assert "const PLUGIN_SERVICE_TIMEOUT_MS = 45_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
     assert (
         'runPluginService(pluginRoot, "backend-service.sh", "start"' in node_installer
     )
-    assert 'startBackendService(pluginRoot, "claude-code")' in node_installer
-    assert 'startBackendService(cacheDir, "codex")' in node_installer
+    assert 'const HOST_CLAUDE_CODE = "claude-code"' in node_installer
+    assert 'const HOST_CODEX = "codex"' in node_installer
+    assert "startBackendService(pluginRoot, HOST_CLAUDE_CODE)" in node_installer
+    assert "startBackendService(cacheDir, HOST_CODEX)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -1162,7 +1297,8 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
 def test_node_update_reinstalls_by_host() -> None:
     node_installer = NODE_INSTALLER.read_text()
 
-    assert 'if (parseHost(args) === "codex")' in node_installer
+    assert "if (parseHost(args) === HOST_CODEX)" in node_installer
+    assert "if (parseHost(args) === HOST_OPENCODE)" in node_installer
     assert "await runUpdateCodex(args)" in node_installer
     assert "async function runUpdateCodex(args)" in node_installer
     assert 'findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin")' in node_installer
@@ -1597,6 +1733,70 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]
+
+
+def test_smart_install_persists_local_embedding_override(tmp_path: Path) -> None:
+    _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path,
+        mode="fresh",
+    )
+    env["CLAUDE_SMART_USE_LOCAL_EMBEDDING"] = "0"
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = (tmp_path / ".claude-smart" / ".env").read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+
+
+def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
+    _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path,
+        mode="fresh",
+    )
+    command = ["/bin/bash", "--noprofile", "--norc", str(smart_install)]
+
+    first = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    text = runtime_env.read_text()
+    assert [
+        line for line in text.splitlines() if line.startswith("CLAUDE_SMART_HOST=")
+    ] == ['CLAUDE_SMART_HOST="claude-code"']
+    runtime_env.write_text(
+        text.replace('CLAUDE_SMART_HOST="claude-code"', "CLAUDE_SMART_HOST=opencode")
+    )
+
+    second = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    env_lines = runtime_env.read_text().splitlines()
+    assert [
+        line for line in env_lines if line.startswith("CLAUDE_SMART_HOST=")
+    ] == ["CLAUDE_SMART_HOST=opencode"]
+    assert (tmp_path / "uv.log").read_text().count(
+        "sync --locked --python 3.12 --quiet"
+    ) == 1
 
 
 def test_smart_install_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
@@ -2372,9 +2572,12 @@ def _prepare_node_bootstrap_sync_fixture(
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     lock_contents = "stale\n" if mode == "stale" else "locked\n"
     (plugin_root / "uv.lock").write_text(lock_contents)
-    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
+    _write_executable(private_node / "node.exe", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(private_node / "npm", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "npm.cmd", "#!/bin/sh\nexit 0\n")
     _write_bootstrap_uv(uv_bin / "uv", mode=mode)
+    _write_bootstrap_uv(uv_bin / "uv.exe", mode=mode)
     env = os.environ.copy()
     env.update(
         {
@@ -2565,7 +2768,7 @@ def _install_opencode_tarball_fixture(
     for path in [home, prefix, fake_bin, private_node, uv_bin, project, xdg]:
         path.mkdir(parents=True, exist_ok=True)
     _write_executable(fake_bin / "opencode", "#!/bin/sh\nexit 0\n")
-    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(
         private_node / "npm",
         '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
@@ -2685,7 +2888,7 @@ def test_claude_code_fresh_tarball_install_prepares_matching_cache(
     for path in [home, prefix, fake_bin, private_node, uv_bin, project]:
         path.mkdir(parents=True, exist_ok=True)
     _write_fake_claude_installer(fake_bin / "claude")
-    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(
         private_node / "npm",
         '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
@@ -2764,7 +2967,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     for path in [home, prefix, fake_bin, private_node, uv_bin, project]:
         path.mkdir(parents=True, exist_ok=True)
     _write_fake_codex(fake_bin / "codex")
-    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(
         private_node / "npm",
         '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
@@ -3048,7 +3251,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
         )
         + "\n"
     )
-    (private_node / "node").write_text("#!/bin/sh\nexit 0\n")
+    (private_node / "node").write_text("#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     (private_node / "npm").write_text(
         '#!/bin/sh\nprintf \'npm %s\\n\' "$*" >> "$HOME/npm.log"\nexit 0\n'
     )
@@ -3138,6 +3341,109 @@ def test_node_installer_locked_sync_success_does_not_refresh_lock(
     assert (home / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]
+
+
+def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    occupied = home / ".reflexio" / "plugin-root"
+    occupied.mkdir(parents=True)
+    sentinel = occupied / "keep.txt"
+    sentinel.write_text("keep\n")
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sentinel.read_text() == "keep\n"
+    assert (home / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
+        plugin_root
+    )
+
+
+def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    scripts = plugin_root / "scripts"
+    scripts.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    fake_bin = tmp_path / "fake-win-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "uname",
+        "#!/bin/sh\n"
+        'if [ "$1" = "-s" ]; then printf "MINGW64_NT-10.0\\n"; exit 0; fi\n'
+        'if [ "$1" = "-m" ]; then printf "x86_64\\n"; exit 0; fi\n'
+        'printf "MINGW64_NT-10.0\\n"\n',
+    )
+    fake_bash = tmp_path / "fake-bash"
+    real_bash = shutil.which("bash") or "/bin/bash"
+    _write_executable(
+        fake_bash,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/bash.log"\n'
+        'export PATH="$CLAUDE_SMART_TEST_BASH_PATH"\n'
+        f'exec {shlex.quote(real_bash)} "$@"\n',
+    )
+    env.update(
+        {
+            "BASH": str(fake_bash),
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "CLAUDE_SMART_TEST_BASH_PATH": (
+                f"{fake_bin}:/bin:/usr/bin:{os.environ.get('PATH', '')}"
+            ),
+            "CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS": "1",
+            "SHELL": "",
+        }
+    )
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => { console.error('unexpected success'); process.exit(1); })"
+        ".catch((err) => { console.error(err.message); process.exit(2); });"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    marker = home / ".claude-smart" / "install-failed"
+    assert result.returncode == 2
+    assert "Windows local embedding requires Microsoft Visual C++" in result.stderr
+    assert marker.exists()
+    marker_text = marker.read_text()
+    assert "Windows local embedding requires Microsoft Visual C++" in marker_text
+    assert "fingerprint=" in marker_text
+    assert "verify-windows-embedding" in (home / "bash.log").read_text()
+    npm_log = home / "npm.log"
+    assert not npm_log.exists() or "npm ci" not in npm_log.read_text()
 
 
 def test_node_installer_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
@@ -3291,6 +3597,233 @@ def test_resolve_npm_accepts_windows_cmd_shim(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[0] == str(npm_cmd)
+
+
+def test_resolve_npm_accepts_windows_exe_shim(tmp_path: Path) -> None:
+    npm_exe = tmp_path / "npm.exe"
+    _write_executable(npm_exe, "#!/bin/sh\nprintf '10.0.0\\n'\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_resolve_npm; claude_smart_npm_available',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[0] == str(npm_exe)
+
+
+def test_windows_resolve_python_prefers_py_launcher(tmp_path: Path) -> None:
+    py = tmp_path / "py"
+    uname = tmp_path / "uname"
+    _write_executable(py, "#!/bin/sh\nprintf 'Python 3.12.0\\n'\n")
+    _write_executable(uname, "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_resolve_python',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(py)
+
+
+def test_windows_private_node_path_skips_posix_bin_probe(tmp_path: Path) -> None:
+    uname = tmp_path / "uname"
+    _write_executable(uname, "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_prepend_node_bins; printf "%s" "$PATH"',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split(":", 1)[0] == str(tmp_path / ".claude-smart" / "node" / "current")
+
+
+def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> None:
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "awk")
+    cases = {
+        "/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+        "/cygdrive/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+        "/mnt/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+    }
+
+    for source, expected in cases.items():
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                f'. "{LIB}"; claude_smart_to_windows_path "$1"',
+                "bash",
+                source,
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+
+def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    old_cache = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.47"
+    )
+    new_cache = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.48"
+    )
+    for root, name in ((old_cache, "old"), (new_cache, "new")):
+        root.mkdir(parents=True)
+        (root / "pyproject.toml").write_text(f"[project]\nname='{name}'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "uname", "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    _write_executable(fake_bin / "cygpath", "#!/bin/sh\nprintf '%s\\n' \"$2\"\n")
+    _write_executable(
+        fake_bin / "cmd.exe",
+        "#!/bin/sh\n"
+        "[ \"$1\" = \"//C\" ] || exit 2\n"
+        "shift\n"
+        "case \"$1\" in\n"
+        "  rmdir)\n"
+        "    rm -rf \"$2\"\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  mklink)\n"
+        "    [ \"$2\" = \"//J\" ] || exit 3\n"
+        "    link=\"$3\"\n"
+        "    target=\"$4\"\n"
+        "    rm -rf \"$link\"\n"
+        "    mkdir -p \"$link\"\n"
+        "    cp \"$target/pyproject.toml\" \"$link/pyproject.toml\"\n"
+        "    printf '%s\\n' \"$target\" > \"$link/target.txt\"\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        "exit 4\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    first = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(old_cache), "--force"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    second = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(new_cache)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    link = tmp_path / ".reflexio" / "plugin-root"
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(new_cache)
+    assert (link / "target.txt").read_text().strip() == str(new_cache)
+    assert "cache-tracking, was" in second.stderr
+
+
+def test_windows_plugin_root_warns_when_junction_metadata_missing(tmp_path: Path) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    new_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.48"
+    new_root.mkdir(parents=True)
+    (new_root / "pyproject.toml").write_text("[project]\nname='new'\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.mkdir(parents=True)
+    (link / "pyproject.toml").write_text("[project]\nname='stale'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "uname", "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(new_root)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin-root.txt is missing" in result.stderr
+    assert "with --force or delete the occupied path" in result.stderr
+    assert not (tmp_path / ".reflexio" / "plugin-root.txt").exists()
+    assert (link / "pyproject.toml").read_text() == "[project]\nname='stale'\n"
+
+
+def test_windows_private_node_current_uses_backup_restore() -> None:
+    smart_install = SMART_INSTALL.read_text()
+
+    assert "if claude_smart_is_windows; then" in smart_install
+    assert 'old_current="$node_root/current.old.$$"' in smart_install
+    assert 'mv "$node_root/current" "$old_current"' in smart_install
+    assert 'mv "$install_dir" "$node_root/current"' in smart_install
+    assert 'if ! mv "$old_current" "$node_root/current"; then' in smart_install
+    assert "could not restore previous private Node.js install" in smart_install
+    assert "previous install remains at $old_current for manual recovery" in smart_install
+    assert 'rm -rf "$node_root/current" 2>/dev/null || true' not in smart_install
 
 
 def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
@@ -3486,6 +4019,37 @@ def test_codex_hook_redirects_reflexio_stray_copy_to_stable_root(
     assert "redirecting stray plugin copy" in (
         tmp_path / ".claude-smart" / "backend.log"
     ).read_text()
+
+
+def test_codex_hook_preserves_occupied_plugin_root(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    plugin_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.47"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    occupied = tmp_path / ".reflexio" / "plugin-root"
+    occupied.mkdir(parents=True)
+    sentinel = occupied / "keep.txt"
+    sentinel.write_text("keep\n")
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "ensure-root"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
+    assert sentinel.read_text() == "keep\n"
+    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
+        plugin_root
+    )
 
 
 def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:

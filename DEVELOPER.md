@@ -21,12 +21,12 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 
 ## Environment variables
 
-Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.reflexio/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
+Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.claude-smart/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.reflexio/.env` by `claude-smart install`. |
-| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.claude-smart/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.claude-smart/.env` by `claude-smart install`. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | `local_service` when local embedding is enabled | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
@@ -50,12 +50,12 @@ claude-smart uses one shared local embedding daemon by default. The backend star
 
 Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
 
-If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain. For hosted Reflexio, prefer a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon.
+Hosted Reflexio deployments should use a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon. The local claude-smart install path assumes the shared local daemon.
 
 ## Install dependency policy
 
-Vanilla install support means the user has installed the host (`claude` or
-`codex`) and the installer runner (`npx`, which needs Node), but
+Vanilla install support means the user has installed the host (`claude`,
+`codex`, or `opencode`) and the installer runner (`npx`, which needs Node), but
 does not need global Python, uv, Node/npm for plugin runtime, npm packages, or
 embedding model files. The plugin bootstraps runtime dependencies into user
 state:
@@ -74,8 +74,10 @@ Intel Mac, macOS 13 or older, and Windows ARM should fail before dependency sync
 with a visible unsupported-platform message because the current ML dependency
 stack does not publish a complete native wheel set for those targets.
 
-On native Windows, Claude Code hooks still need a Git Bash-compatible `bash`
-until Claude Code exposes a single cross-platform hook command shape.
+On native Windows, Claude Code and OpenCode hooks still need a Git
+Bash-compatible `bash` for the bundled shell scripts. The installers bootstrap
+claude-smart-owned runtime dependencies, but do not install host CLIs (`claude`,
+`codex`, `opencode`) or Git Bash.
 
 When changing dependencies, verify:
 

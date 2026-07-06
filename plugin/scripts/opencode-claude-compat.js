@@ -193,7 +193,14 @@ function parseOpenCodeJson(stdout) {
       chunks.push(event.result);
     }
   }
-  return chunks.join("").trim();
+  return stripOuterMarkdownFence(chunks.join("").trim());
+}
+
+function stripOuterMarkdownFence(content) {
+  // OpenCode can wrap one-shot JSON in a whole-response markdown fence.
+  // Strip only that outer fence so streamed and one-shot output normalize alike.
+  const match = String(content || "").match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/);
+  return match ? match[1].trim() : content;
 }
 
 function timeoutMs() {

@@ -113,7 +113,11 @@ npx claude-smart install --host opencode
 
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine. The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart.
 
+The installer prepares claude-smart's runtime dependencies, but expects the OpenCode CLI to already be installed. It resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts; set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
+
 OpenCode support is new and uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+
+On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. The installer also checks the Windows local embedding runtime and writes actionable setup failures to `~/.claude-smart/install-failed`.
 
 To uninstall:
 
@@ -237,7 +241,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | Path | What |
 | --- | --- |
 | `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
-| `~/.reflexio/.env` | Provider config — `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, any optional API keys. |
+| `~/.claude-smart/.env` | claude-smart local runtime config — `CLAUDE_SMART_HOST`, `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, and `CLAUDE_SMART_OPENCODE_PATH`. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |

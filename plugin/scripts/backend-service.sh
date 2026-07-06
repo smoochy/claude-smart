@@ -45,7 +45,7 @@ export REFLEXIO_DEFAULT_ORG_ID="claude-smart"
 # Load claude-smart's env from ~/.claude-smart/.env instead of the reflexio
 # default ~/.reflexio/.env, so an OSS reflexio backend's .env on this machine
 # can't leak in. The data dir is independent (LOCAL_STORAGE_PATH), so both still
-# share ~/.reflexio/data. Must stay in sync with env_config.REFLEXIO_ENV_PATH and
+# share ~/.reflexio/data. Must stay in sync with env_config.CLAUDE_SMART_ENV_PATH and
 # the source path in _lib.sh (claude_smart_source_reflexio_env).
 export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
 
@@ -65,11 +65,13 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ] && command -v opencode >/dev/null 2>&1; then
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ]; then
     # Preserve Reflexio's Claude CLI provider contract while routing
-    # generation through the user's authenticated OpenCode setup.
+    # generation through the user's authenticated OpenCode setup. The bridge
+    # resolves opencode from CLAUDE_SMART_OPENCODE_PATH or PATH; don't require
+    # Git Bash's PATH to match the installer shell's PATH here.
     claude_smart_prepend_node_bins
-    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"
+    export CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
   elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
@@ -110,7 +112,8 @@ if reason:
     message += f">\n> Last startup error: `{reason}`\n"
 message += (
     ">\n> Make sure the local model provider is available: Claude Code needs "
-    "`claude`, Codex needs `codex`. Then run `/claude-smart:restart`."
+    "`claude`, Codex needs `codex`, and OpenCode needs `opencode`. "
+    "Then run `/claude-smart:restart`."
 )
 print(json.dumps({
     "hookSpecificOutput": {
@@ -155,9 +158,13 @@ is_our_backend_running() {
   return 1
 }
 
-# True if *anything* is listening on the port (even non-HTTP). Used to
-# avoid stomping on a foreign listener with a failed-to-start uvicorn.
+# Best-effort port probe. curl catches responsive HTTP listeners; /dev/tcp
+# catches other listeners where bash supports it. Used to avoid stomping on
+# a foreign listener with a failed-to-start uvicorn.
 port_occupied() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
+  fi
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
@@ -326,9 +333,7 @@ case "$CMD" in
         # Native Windows Python expects ;-separated Windows-style paths in
         # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
         pythonpath_sep=";"
-        if command -v cygpath >/dev/null 2>&1; then
-          vendor_pythonpath="$(cygpath -w "$vendor_pythonpath")"
-        fi
+        vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
       fi
       backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
     fi

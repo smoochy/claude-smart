@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
 import { sessionIDFrom } from "./internal.js";
@@ -84,6 +84,64 @@ const SCRIPTS_DIR = resolve(PLUGIN_ROOT, "scripts");
 const HOOK_ENTRY = resolve(SCRIPTS_DIR, "hook_entry.sh");
 const BACKEND_SERVICE = resolve(SCRIPTS_DIR, "backend-service.sh");
 const DASHBOARD_SERVICE = resolve(SCRIPTS_DIR, "dashboard-service.sh");
+function commandPath(names) {
+    const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+    for (const dir of pathParts) {
+        for (const name of names) {
+            const candidate = join(dir, name);
+            if (existsSync(candidate))
+                return candidate;
+        }
+    }
+    return undefined;
+}
+const WINDOWS_SYSTEM_BASH_SUFFIXES = [
+    "\\windows\\system32\\bash.exe",
+    "\\windows\\sysnative\\bash.exe",
+    "\\windows\\syswow64\\bash.exe",
+];
+function windowsPathText(path) {
+    return path.replace(/\//g, "\\").toLowerCase();
+}
+function isWindowsSystemBash(path) {
+    const normalized = windowsPathText(path);
+    return WINDOWS_SYSTEM_BASH_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+function pathCommandCandidates(names) {
+    // Return every PATH match so Windows can skip System32 bash and still find Git Bash.
+    const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+    const candidates = [];
+    for (const dir of pathParts) {
+        for (const name of names) {
+            const candidate = join(dir, name);
+            if (existsSync(candidate))
+                candidates.push(candidate);
+        }
+    }
+    return candidates;
+}
+function firstUsableBash(candidates) {
+    for (const candidate of candidates) {
+        const resolved = existsSync(candidate) ? candidate : commandPath([candidate]);
+        if (resolved && !isWindowsSystemBash(resolved))
+            return resolved;
+    }
+    return undefined;
+}
+function bashPath() {
+    if (process.platform !== "win32")
+        return commandPath(["bash"]);
+    const bashEnv = (process.env.BASH || "").trim();
+    return firstUsableBash([
+        ...(bashEnv ? [bashEnv] : []),
+        "C:\\Program Files\\Git\\bin\\bash.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+        ...pathCommandCandidates(["bash.exe", "bash"]),
+        "bash.exe",
+        "bash",
+    ]);
+}
+const RESOLVED_BASH = bashPath();
 function contextFrom(result) {
     const hookOutput = result.hookSpecificOutput;
     if (!hookOutput || typeof hookOutput !== "object")
@@ -109,7 +167,7 @@ function parseFirstJsonObject(text) {
 }
 function runScript(script, args, payload) {
     return new Promise((resolvePromise) => {
-        const child = spawn("bash", [script, ...args], {
+        const child = spawn(RESOLVED_BASH || "bash", [script, ...args], {
             cwd: PLUGIN_ROOT,
             env: {
                 ...process.env,

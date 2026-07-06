@@ -37,10 +37,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from claude_smart import context_format, cs_cite, env_config, ids, publish, state
+from claude_smart import context_format, cs_cite, env_config, ids, publish, runtime, state
 from claude_smart.reflexio_adapter import Adapter
 
-_REFLEXIO_ENV_PATH = env_config.REFLEXIO_ENV_PATH
+_HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
+_HOST_CODEX = runtime.HOST_CODEX
+_HOST_OPENCODE = runtime.HOST_OPENCODE
+_HOST_CHOICES = (_HOST_CLAUDE_CODE, _HOST_CODEX, _HOST_OPENCODE)
+_CLAUDE_SMART_ENV_PATH = env_config.CLAUDE_SMART_ENV_PATH
 _MANAGED_REFLEXIO_URL = env_config.MANAGED_REFLEXIO_URL
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
@@ -99,6 +103,7 @@ _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_ORG_ID = "claude-smart"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / f"config_{_REFLEXIO_ORG_ID}.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
+_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH"
 _CODEX_REQUIRED_FILES = (
     Path(".agents/plugins/marketplace.json"),
     Path("plugin/.codex-plugin/plugin.json"),
@@ -927,15 +932,20 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
     return False, output or "Codex CLI does not expose plugin marketplace commands"
 
 
-def _configure_reflexio_setup() -> bool:
+def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
     """Load setup state and ensure local defaults when unmanaged.
+
+    Args:
+        host: Host integration being installed. Persisted in local mode so
+            later backend restarts can wire the same extraction bridge even
+            when the host plugin server is not the process launcher.
 
     Returns:
         bool: Whether read-only mode is enabled.
     """
-    env_config.load_reflexio_env(_REFLEXIO_ENV_PATH)
+    env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     try:
-        env_text = _REFLEXIO_ENV_PATH.read_text()
+        env_text = _CLAUDE_SMART_ENV_PATH.read_text()
     except OSError:
         env_text = ""
     read_only_value = ""
@@ -975,9 +985,9 @@ def _configure_reflexio_setup() -> bool:
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
         os.environ.pop("REFLEXIO_USER_ID", None)
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
-        added = env_config.ensure_local_env_defaults(_REFLEXIO_ENV_PATH)
+        added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
-            sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+            sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
     return read_only
 
 
@@ -1174,7 +1184,7 @@ def _patch_opencode_plugin_config(
 
 
 def _has_extraction_provider() -> bool:
-    env_config.load_reflexio_env(_REFLEXIO_ENV_PATH)
+    env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     if os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "").strip():
         return True
     cli_path = os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
@@ -1182,7 +1192,7 @@ def _has_extraction_provider() -> bool:
         resolved = Path(cli_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return True
-    return bool(shutil.which("claude") or shutil.which("codex") or shutil.which("opencode"))
+    return bool(shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path())
 
 
 def _extraction_provider_error() -> str:
@@ -1191,6 +1201,41 @@ def _extraction_provider_error() -> str:
         "Run `npx claude-smart setup` to configure Reflexio, or install "
         "OpenCode, Claude Code, or Codex so local extraction can use a supported CLI.\n"
     )
+
+
+def _has_opencode_cli() -> bool:
+    return _resolve_opencode_path() is not None
+
+
+def _resolve_opencode_path() -> str | None:
+    opencode_path = os.environ.get(_OPENCODE_PATH_ENV, "").strip()
+    if opencode_path:
+        resolved = Path(opencode_path).expanduser()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved)
+    return shutil.which("opencode")
+
+
+def _persist_opencode_path() -> list[str]:
+    resolved = _resolve_opencode_path()
+    if not resolved:
+        return []
+    os.environ[_OPENCODE_PATH_ENV] = resolved
+    return env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
+
+
+def _opencode_prerequisite_error() -> str | None:
+    if not _has_opencode_cli():
+        return (
+            "error: OpenCode CLI not found on PATH. Install OpenCode first, "
+            "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
+        )
+    if os.name == "nt" and not _resolve_bash():
+        return (
+            "error: Git Bash is required for claude-smart OpenCode support on Windows. "
+            "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
+        )
+    return None
 
 
 def _opencode_install_supported_from_this_package() -> bool:
@@ -1332,7 +1377,12 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
             "Run `npx claude-smart install --host opencode`.\n"
         )
         return 1
-    read_only = _configure_reflexio_setup()
+    prerequisite_error = _opencode_prerequisite_error()
+    if prerequisite_error:
+        sys.stderr.write(prerequisite_error)
+        return 1
+    read_only = _configure_reflexio_setup(host=_HOST_OPENCODE)
+    _persist_opencode_path()
     if not _has_extraction_provider():
         sys.stderr.write(_extraction_provider_error())
         return 1
@@ -1387,7 +1437,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
             "error: 'uv' not found on PATH. Install uv or restart your shell.\n"
         )
         return 1
-    read_only = _configure_reflexio_setup()
+    read_only = _configure_reflexio_setup(host=_HOST_CODEX)
 
     missing = _missing_codex_marketplace_files(_REPO_ROOT)
     if missing:
@@ -1485,9 +1535,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
-    if getattr(args, "host", "claude-code") == "codex":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_install_codex(args)
-    if getattr(args, "host", "claude-code") == "opencode":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_install_opencode(args)
 
     if not shutil.which("claude"):
@@ -1496,7 +1546,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Install Claude Code first: https://claude.com/claude-code\n"
         )
         return 1
-    read_only = _configure_reflexio_setup()
+    read_only = _configure_reflexio_setup(host=_HOST_CLAUDE_CODE)
 
     refresh_existing = bool(getattr(args, "refresh_existing", False))
     for cmd in (
@@ -1559,16 +1609,16 @@ def cmd_update(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the host CLI is missing or install fails.
     """
-    if getattr(args, "host", "claude-code") == "codex":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_update_codex(args)
-    if getattr(args, "host", "claude-code") == "opencode":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_update_opencode(args)
 
     _run_service(_DASHBOARD_SCRIPT, "stop")
     _run_service(_BACKEND_SCRIPT, "stop")
     sys.stdout.write("Updating claude-smart by reinstalling from this package...\n")
     install_args = argparse.Namespace(**vars(args), refresh_existing=True)
-    install_args.host = "claude-code"
+    install_args.host = _HOST_CLAUDE_CODE
     return cmd_install(install_args)
 
 
@@ -1585,7 +1635,7 @@ def cmd_update_codex(_args: argparse.Namespace) -> int:
         "Updating claude-smart Codex support by reinstalling from this package...\n"
     )
     install_args = argparse.Namespace(**vars(_args))
-    install_args.host = "codex"
+    install_args.host = _HOST_CODEX
     return cmd_install_codex(install_args)
 
 
@@ -1596,7 +1646,7 @@ def cmd_update_opencode(args: argparse.Namespace) -> int:
         "Updating claude-smart OpenCode support by reinstalling from this package...\n"
     )
     install_args = argparse.Namespace(**vars(args))
-    install_args.host = "opencode"
+    install_args.host = _HOST_OPENCODE
     return cmd_install_opencode(install_args)
 
 
@@ -1612,9 +1662,9 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
-    if getattr(_args, "host", "claude-code") == "codex":
+    if getattr(_args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_uninstall_codex(_args)
-    if getattr(_args, "host", "claude-code") == "opencode":
+    if getattr(_args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_uninstall_opencode(_args)
 
     if not shutil.which("claude"):
@@ -1761,7 +1811,7 @@ def _reflexio_show_footer() -> str:
         str: A leading-separator markdown footer ending in a newline.
     """
     return (
-        f"\n---\n⭐ claude-smart is powered by [reflexio]({cs_cite.REFLEXIO_REPO_URL})"
+        f"\n---\nclaude-smart is powered by [reflexio]({cs_cite.REFLEXIO_REPO_URL})"
         f" — if it helps you, [star it on GitHub]({cs_cite.REFLEXIO_REPO_URL}).\n"
     )
 
@@ -1949,7 +1999,7 @@ def _resolve_absolute_path(raw_path: str | Path, *, source: str) -> Path:
 def _effective_storage_root() -> Path:
     raw = os.environ.get(_LOCAL_STORAGE_ENV, "").strip()
     if not raw:
-        raw = _read_dotenv_value(_REFLEXIO_ENV_PATH, _LOCAL_STORAGE_ENV) or ""
+        raw = _read_dotenv_value(_CLAUDE_SMART_ENV_PATH, _LOCAL_STORAGE_ENV) or ""
     return _resolve_absolute_path(
         raw or _DEFAULT_STORAGE_ROOT, source=_LOCAL_STORAGE_ENV
     )
@@ -2449,8 +2499,8 @@ def _build_parser() -> argparse.ArgumentParser:
     inst = sub.add_parser("install", help="Install claude-smart")
     inst.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Install target host",
     )
     inst.add_argument(
@@ -2464,8 +2514,8 @@ def _build_parser() -> argparse.ArgumentParser:
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
     upd.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Update target host",
     )
     upd.add_argument(
@@ -2479,8 +2529,8 @@ def _build_parser() -> argparse.ArgumentParser:
     uni = sub.add_parser("uninstall", help="Remove claude-smart")
     uni.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Uninstall target host",
     )
     uni.add_argument(

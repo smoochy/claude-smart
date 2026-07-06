@@ -13,17 +13,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-REFLEXIO_ENV_PATH = Path.home() / ".claude-smart" / ".env"
+from claude_smart import runtime
+
+CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
+# Deprecated internal alias kept so older imports do not fail abruptly.
+REFLEXIO_ENV_PATH = CLAUDE_SMART_ENV_PATH
 MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
+DEFAULT_CLAUDE_SMART_HOST = runtime.HOST_CLAUDE_CODE
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
-        "# Route reflexio generation through the local Claude Code CLI",
+        "# Route reflexio generation through the configured local host CLI",
         CLAUDE_SMART_USE_LOCAL_CLI_ENV,
         "1",
     ),
@@ -33,7 +39,12 @@ _LOCAL_DEFAULT_ENTRIES = (
         "1",
     ),
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
+    (None, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST),
 )
+_ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
+    CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+    CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+}
 _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_URL_ENV,
     REFLEXIO_API_KEY_ENV,
@@ -69,7 +80,7 @@ def parse_env_line(line: str) -> tuple[str, str] | None:
 
 def load_reflexio_env(path: Path | None = None) -> None:
     """Load ``~/.claude-smart/.env`` into ``os.environ`` without overriding values."""
-    path = path or REFLEXIO_ENV_PATH
+    path = path or CLAUDE_SMART_ENV_PATH
     try:
         text = path.read_text()
     except OSError:
@@ -118,14 +129,19 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
     return added
 
 
-def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
+def ensure_local_env_defaults(
+    path: Path | None = None,
+    host: str = DEFAULT_CLAUDE_SMART_HOST,
+) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
-    Existing active assignments win. This repairs first installs and deleted
-    env files without clobbering explicit user overrides such as
-    ``CLAUDE_SMART_READ_ONLY=1``.
+    Existing active assignments win except ``CLAUDE_SMART_HOST``, which is
+    install-selected state and must follow the host currently being installed.
+    This repairs first installs and deleted env files without clobbering
+    explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
     """
-    path = path or REFLEXIO_ENV_PATH
+    install_host = host
+    path = path or CLAUDE_SMART_ENV_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = path.read_text()
@@ -135,12 +151,27 @@ def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
     present: set[str] = set()
     kept_lines: list[str] = []
     pruned = False
+    changed = False
+    host_written = False
     for line in existing.splitlines():
         parsed = parse_env_line(line)
         if parsed is not None:
             key, _value = parsed
             if key in _LOCAL_MODE_PRUNE_KEYS:
                 pruned = True
+                continue
+            if key == CLAUDE_SMART_HOST_ENV:
+                present.add(key)
+                if not host_written:
+                    replacement = (
+                        f"{CLAUDE_SMART_HOST_ENV}={_escape_env_value(install_host)}"
+                    )
+                    kept_lines.append(replacement)
+                    host_written = True
+                    if line != replacement or _value != install_host:
+                        changed = True
+                else:
+                    changed = True
                 continue
             present.add(key)
         kept_lines.append(line)
@@ -150,15 +181,16 @@ def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
     for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
         if key in present:
             continue
+        effective_value = _resolve_local_env_default(key, value, install_host)
         if comment:
             additions.append(comment)
         if key == CLAUDE_SMART_READ_ONLY_ENV:
-            additions.append(f'{key}="{_escape_env_value(value)}"')
+            additions.append(f'{key}="{_escape_env_value(effective_value)}"')
         else:
-            additions.append(f"{key}={_escape_env_value(value)}")
+            additions.append(f"{key}={_escape_env_value(effective_value)}")
         added_keys.append(key)
 
-    if additions or pruned:
+    if additions or pruned or changed:
         content = "\n".join(kept_lines)
         if additions:
             prefix = "" if not content or content.endswith("\n") else "\n"
@@ -169,6 +201,16 @@ def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
         path.touch()
     path.chmod(0o600)
     return added_keys
+
+
+def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> str:
+    if key == CLAUDE_SMART_HOST_ENV:
+        return install_host
+    if key in _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS:
+        explicit = os.environ.get(key, "").strip()
+        if explicit:
+            return explicit
+    return fallback
 
 
 def env_truthy(name: str) -> bool:

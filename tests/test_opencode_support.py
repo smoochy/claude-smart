@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import textwrap
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Any
 
 import pytest  # type: ignore[reportMissingImports]
@@ -657,13 +657,47 @@ def test_opencode_bootstrap_guard_rejects_unsupported_package(
 
 
 def test_opencode_install_fails_without_extraction_provider(monkeypatch, tmp_path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    env_path = tmp_path / ".claude-smart" / ".env"
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
 
     rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
 
     assert rc == 1
+
+
+def test_opencode_install_requires_opencode_cli_even_with_other_provider(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.setenv(cli.env_config.REFLEXIO_API_KEY_ENV, "rk-test")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None)
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    assert rc == 1
+    assert "OpenCode CLI not found on PATH" in capsys.readouterr().err
+
+
+def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
+    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    assert rc == 1
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in capsys.readouterr().err
+
+
+def test_opencode_prerequisite_accepts_git_bash_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+
+    assert cli._opencode_prerequisite_error() is None
 
 
 def test_opencode_extraction_provider_requires_executable_cli_path(
@@ -672,7 +706,7 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
     cli_path = tmp_path / "claude-smart-provider"
     cli_path.write_text("#!/bin/sh\nexit 0\n")
     cli_path.chmod(0o644)
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(cli_path))
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
@@ -684,8 +718,9 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
 
 
 def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv(cli._OPENCODE_PATH_ENV, raising=False)
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
     monkeypatch.setattr(
         cli.shutil, "which", lambda name: f"/bin/{name}" if name == "opencode" else None
@@ -694,12 +729,40 @@ def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_pat
     assert cli._has_extraction_provider() is True
 
 
-def test_opencode_backend_service_prefers_opencode_bridge() -> None:
+def test_opencode_extraction_provider_accepts_explicit_opencode_path(
+    monkeypatch, tmp_path
+) -> None:
+    opencode = tmp_path / "opencode"
+    opencode.write_text("#!/bin/sh\nexit 0\n")
+    opencode.chmod(0o755)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
+    monkeypatch.setenv(cli._OPENCODE_PATH_ENV, str(opencode))
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    assert cli._has_extraction_provider() is True
+
+
+def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
-    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"' in service
+    assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
+    assert "command -v opencode" not in service
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
+
+
+def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
+    server = (REPO_ROOT / "plugin" / "opencode" / "server.mts").read_text()
+
+    assert "function commandPath(names: string[]): string | undefined" in server
+    assert "WINDOWS_SYSTEM_BASH_SUFFIXES" in server
+    assert "isWindowsSystemBash" in server
+    assert '"C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe"' in server
+    assert 'pathCommandCandidates(["bash.exe", "bash"])' in server
+    assert "const RESOLVED_BASH = bashPath()" in server
+    assert 'spawn(RESOLVED_BASH || "bash"' in server
 
 
 def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
@@ -742,6 +805,7 @@ process.stdout.write(JSON.stringify({{
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
 
     result = subprocess.run(
         [
@@ -785,6 +849,49 @@ process.stdout.write(JSON.stringify({{
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 
 
+def test_opencode_cli_bridge_strips_outer_json_markdown_fence(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text(
+        """#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "text",
+  part: { type: "text", text: "```json\\n{\\\"playbooks\\\":[]}\\n```" }
+}) + "\\n");
+"""
+    )
+    fake_opencode.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+
+    result = subprocess.run(
+        [
+            shutil_which_node() or "node",
+            str(bridge),
+            "-p",
+            "--output-format",
+            "stream-json",
+        ],
+        input="return json",
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "type": "result",
+        "subtype": "success",
+        "result": '{"playbooks":[]}',
+    }
+
+
 def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
@@ -816,6 +923,7 @@ def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> Non
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     prompt = "x" * 200_000
 
     result = subprocess.run(
@@ -859,6 +967,63 @@ def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path
     assert result.stdout == "true"
 
 
+def test_node_installer_accepts_explicit_opencode_extraction_provider(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text("#!/bin/sh\nexit 0\n")
+    fake_opencode.chmod(0o755)
+    script = (
+        f"process.env.PATH = {json.dumps(str(tmp_path / 'empty'))};"
+        "delete process.env.REFLEXIO_API_KEY;"
+        "delete process.env.CLAUDE_SMART_CLI_PATH;"
+        f"process.env.CLAUDE_SMART_OPENCODE_PATH = {json.dumps(str(fake_opencode))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.stdout.write(String(installer.hasExtractionProvider()));"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+
+
+def test_node_installer_persists_resolved_opencode_path(tmp_path: Path) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    env = _isolated_installer_env(tmp_path)
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+    opencode = Path(env["PATH"].split(os.pathsep)[0]) / "opencode"
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "installer.persistOpenCodePath();"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = f'CLAUDE_SMART_OPENCODE_PATH="{opencode}"'
+    assert expected in (Path(env["HOME"]) / ".claude-smart" / ".env").read_text()
+    assert not (Path(env["HOME"]) / ".reflexio" / ".env").exists()
+
+
 def _fake_opencode_path(tmp_path: Path) -> Path:
     fake_opencode = tmp_path / "opencode"
     fake_opencode.write_text("#!/bin/sh\nexit 0\n")
@@ -880,6 +1045,7 @@ def _isolated_installer_env(tmp_path: Path) -> dict[str, str]:
     )
     env.pop("REFLEXIO_API_KEY", None)
     env.pop("CLAUDE_SMART_CLI_PATH", None)
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     return env
 
 
@@ -914,9 +1080,10 @@ def _seed_private_node_and_uv(env: dict[str, str]) -> None:
     uv.write_text(
         "#!/bin/sh\n"
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
-        'mkdir -p "$PWD/.venv/bin"\n'
+        '/bin/mkdir -p "$PWD/.venv/bin" "$PWD/.venv/Scripts"\n'
         'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
-        'chmod +x "$PWD/.venv/bin/python"\n'
+        'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/Scripts/python.exe"\n'
+        '/bin/chmod +x "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
         "exit 0\n"
     )
     uv.chmod(0o755)
@@ -959,6 +1126,225 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     local_package = Path(plugin_spec.removeprefix("file://"))
     assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
+
+
+def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env["PATH"] = f"{empty_bin}{os.pathsep}/bin{os.pathsep}/usr/bin"
+    env["REFLEXIO_API_KEY"] = "rk-test"
+    _seed_private_node_and_uv(env)
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "OpenCode CLI not found on PATH" in result.stderr
+    assert not (project / "opencode.json").exists()
+
+
+def test_node_opencode_install_requires_bash_on_windows(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    env.update(
+        {
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "PATH": str(fake_bin),
+        }
+    )
+    _seed_private_node_and_uv(env)
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in result.stderr
+    assert not (project / "opencode.json").exists()
+
+
+def test_node_opencode_prerequisite_rejects_windows_wsl_bash_stub(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    fake_bin = tmp_path / "fake-bin"
+    system_dir = tmp_path / "Windows" / "System32"
+    git_bash_dir = tmp_path / "Program Files" / "Git" / "bin"
+    fake_bin.mkdir()
+    system_dir.mkdir(parents=True)
+    git_bash_dir.mkdir(parents=True)
+    fake_opencode = _fake_opencode_path(fake_bin)
+    for bash in (system_dir / "bash.exe", git_bash_dir / "bash.exe"):
+        bash.write_text("#!/bin/sh\nexit 0\n")
+        bash.chmod(0o755)
+    script = (
+        "process.env.CLAUDE_SMART_TEST_PLATFORM = 'win32';"
+        f"process.env.CLAUDE_SMART_OPENCODE_PATH = {json.dumps(str(fake_opencode))};"
+        f"const systemDir = {json.dumps(str(system_dir))};"
+        f"const gitBashDir = {json.dumps(str(git_bash_dir))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.env.PATH = systemDir;"
+        "const withSystemBash = installer.opencodePrerequisiteError();"
+        "process.env.PATH = `${systemDir};${gitBashDir}`;"
+        "const withGitBash = installer.opencodePrerequisiteError();"
+        "process.stdout.write(JSON.stringify({ withSystemBash, withGitBash }));"
+    )
+
+    result = _run_node_script(script)
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in parsed[
+        "withSystemBash"
+    ]
+    assert parsed["withGitBash"] is None
+
+
+def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_windows(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    home = Path(env["HOME"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    opencode_cmd = fake_bin / "opencode.cmd"
+    opencode_cmd.write_text("#!/bin/sh\nexit 0\n")
+    opencode_cmd.chmod(0o755)
+    bash_exe = fake_bin / "bash.exe"
+    bash_exe.write_text("#!/bin/sh\nexit 0\n")
+    bash_exe.chmod(0o755)
+    env.update(
+        {
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "PATH": str(fake_bin),
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+        }
+    )
+    _seed_private_node_and_uv(env)
+    for env_path in [home / ".reflexio" / ".env", home / ".claude-smart" / ".env"]:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(
+            "# existing host state\n"
+            "CLAUDE_SMART_HOST=codex\n"
+            'CLAUDE_SMART_READ_ONLY="1"\n'
+        )
+    claude_cache = (
+        home / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
+    )
+    codex_cache = (
+        home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
+    )
+    for cache in [claude_cache, codex_cache]:
+        cache.mkdir(parents=True)
+        (cache / "keep.txt").write_text("keep\n")
+    codex_config = home / ".codex" / "config.toml"
+    codex_config.parent.mkdir(parents=True, exist_ok=True)
+    codex_config.write_text(
+        '[plugins."claude-smart@reflexioai"]\n'
+        'enabled = true\n'
+        'source = "reflexioai"\n'
+    )
+    reflexio_data = home / ".reflexio" / "data" / "reflexio.db"
+    reflexio_data.parent.mkdir(parents=True, exist_ok=True)
+    reflexio_data.write_text("learned data\n")
+    session_file = home / ".claude-smart" / "sessions" / "codex.jsonl"
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("{}\n")
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads((project / "opencode.json").read_text())
+    plugin_spec = parsed["plugin"][0]
+    assert plugin_spec.startswith("file://")
+    local_package = Path(plugin_spec.removeprefix("file://"))
+    assert local_package == home / ".claude-smart" / "opencode" / "claude-smart"
+    assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
+    runtime_env = (home / ".claude-smart" / ".env").read_text()
+    setup_env = (home / ".reflexio" / ".env").read_text()
+    for text in [runtime_env, setup_env]:
+        assert "CLAUDE_SMART_HOST=opencode" in text
+        assert "CLAUDE_SMART_HOST=codex" not in text
+        assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode_cmd}"' in runtime_env
+    assert (claude_cache / "keep.txt").read_text() == "keep\n"
+    assert (codex_cache / "keep.txt").read_text() == "keep\n"
+    assert codex_config.read_text() == (
+        '[plugins."claude-smart@reflexioai"]\n'
+        'enabled = true\n'
+        'source = "reflexioai"\n'
+    )
+    assert reflexio_data.read_text() == "learned data\n"
+    assert session_file.read_text() == "{}\n"
 
 
 def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(
@@ -1032,9 +1418,14 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     monkeypatch, tmp_path, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "Path", PosixPath)
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 
@@ -1043,6 +1434,9 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     assert rc == 0
     parsed = json.loads((tmp_path / "opencode.json").read_text())
     assert parsed["plugin"] == ["file:///plugin"]
+    assert "CLAUDE_SMART_HOST=opencode" in (
+        tmp_path / ".claude-smart" / ".env"
+    ).read_text()
     assert "Restart OpenCode" in capsys.readouterr().out
 
 
@@ -1053,9 +1447,11 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     legacy_config.parent.mkdir()
     legacy_config.write_text(json.dumps({"plugin": ["other-plugin"]}))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 
@@ -1075,9 +1471,11 @@ def test_opencode_install_migrates_existing_plugins_field(
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 
@@ -2026,12 +2424,35 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         assert filecmp.cmp(expected, generated, shallow=False), filename
 
 
-def test_node_parse_host_accepts_opencode() -> None:
-    installer = (REPO_ROOT / "bin" / "claude-smart.js").read_text()
+def test_node_parse_host_accepts_supported_hosts() -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "const originalExit = process.exit;"
+        "process.exit = (code) => { throw new Error(`exit ${code}`); };"
+        "let rejectsInvalid = false;"
+        "try { installer.parseHost(['--host', 'bad-host']); }"
+        "catch (err) { rejectsInvalid = err.message === 'exit 1'; }"
+        "process.exit = originalExit;"
+        "process.stdout.write(JSON.stringify({"
+        "  defaults: installer.parseHost([]),"
+        "  codex: installer.parseHost(['--host', 'codex']),"
+        "  opencode: installer.parseHost(['--host', 'opencode']),"
+        "  rejectsInvalid,"
+        "}));"
+    )
 
-    assert 'value !== "claude-code" && value !== "codex" && value !== "opencode"' in installer
-    assert "runInstallOpenCode" in installer
-    assert "runUninstallOpenCode" in installer
+    result = _run_node_script(script)
+
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "defaults": "claude-code",
+        "codex": "codex",
+        "opencode": "opencode",
+        "rejectsInvalid": True,
+    }
 
 
 def shutil_which_node() -> str | None:

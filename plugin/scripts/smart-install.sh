@@ -85,6 +85,8 @@ write_failure() {
   local reason fp_hash
   reason="$1"
   fp_hash="$(claude_smart_install_fingerprint_hash "$PLUGIN_ROOT" "$HERE" 2>/dev/null || true)"
+  # bin/claude-smart.js reads this marker too: first line is the user-facing
+  # failure reason, and fingerprint=... marks which install attempt produced it.
   {
     printf '%s\n' "$reason"
     if [ -n "$fp_hash" ]; then
@@ -96,6 +98,22 @@ write_failure() {
   claude_smart_emit_continue
   exit 0
 }
+
+verify_windows_local_embedding_runtime() {
+  claude_smart_is_windows || return 0
+  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ] || return 0
+  if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
+    return 0
+  fi
+  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install."
+}
+
+if [ "${1:-}" = "verify-windows-embedding" ]; then
+  # Node bootstrap runs this after uv sync so install-failed markers stay
+  # consistent with the shell installer path.
+  verify_windows_local_embedding_runtime
+  exit 0
+fi
 
 install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
@@ -112,6 +130,7 @@ install_complete() {
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=' "$HOME/.claude-smart/.env" || return 1
   fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
@@ -196,7 +215,7 @@ install_private_node() {
   local NODE_MIN_MAJOR NODE_MIN_MINOR NODE_LTS_MAJOR
   local node_os archive_ext reason node_arch node_platform base_url node_root
   local tmp_dir shasums_path archive_name ext_re install_dir archive_path
-  local expected_hash actual_hash archive_win dest_win candidate_path next_link
+  local expected_hash actual_hash archive_win dest_win candidate_path next_link old_current
 
   NODE_MIN_MAJOR=20
   NODE_MIN_MINOR=9
@@ -361,19 +380,57 @@ install_private_node() {
     return 1
   fi
 
-  next_link="$node_root/current.next.$$"
-  if ln -s "$install_dir" "$next_link" 2>/dev/null; then
-    if mv -Tf "$next_link" "$node_root/current" 2>/dev/null; then
-      :
-    elif mv -hf "$next_link" "$node_root/current" 2>/dev/null; then
-      :
+  if claude_smart_is_windows; then
+    # Windows cannot rely on the POSIX symlink swap path; keep current recoverable.
+    old_current="$node_root/current.old.$$"
+    rm -rf "$old_current" 2>/dev/null || true
+    if [ -e "$node_root/current" ] || [ -L "$node_root/current" ]; then
+      if ! mv "$node_root/current" "$old_current"; then
+        rm -rf "$tmp_dir" "$install_dir"
+        reason="could not stage existing private Node.js install for replacement"
+        echo "[claude-smart] WARNING: $reason" >&2
+        claude_smart_write_dashboard_unavailable "$reason"
+        return 1
+      fi
+    fi
+    if mv "$install_dir" "$node_root/current"; then
+      rm -rf "$old_current" 2>/dev/null || true
     else
-      rm -rf "$node_root/current"
-      mv "$next_link" "$node_root/current"
+      reason="could not activate private Node.js install at $node_root/current"
+      if [ -e "$node_root/current" ] || [ -L "$node_root/current" ]; then
+        if ! rm -rf "$node_root/current"; then
+          reason="could not remove failed private Node.js install at $node_root/current; previous install remains at $old_current for manual recovery"
+          rm -rf "$tmp_dir" "$install_dir"
+          echo "[claude-smart] WARNING: $reason" >&2
+          claude_smart_write_dashboard_unavailable "$reason"
+          return 1
+        fi
+      fi
+      if [ -e "$old_current" ] || [ -L "$old_current" ]; then
+        if ! mv "$old_current" "$node_root/current"; then
+          reason="could not restore previous private Node.js install from $old_current after activation failure; previous install remains at $old_current for manual recovery"
+        fi
+      fi
+      rm -rf "$tmp_dir" "$install_dir"
+      echo "[claude-smart] WARNING: $reason" >&2
+      claude_smart_write_dashboard_unavailable "$reason"
+      return 1
     fi
   else
-    rm -rf "$next_link" "$node_root/current"
-    mv "$install_dir" "$node_root/current"
+    next_link="$node_root/current.next.$$"
+    if ln -s "$install_dir" "$next_link" 2>/dev/null; then
+      if mv -Tf "$next_link" "$node_root/current" 2>/dev/null; then
+        :
+      elif mv -hf "$next_link" "$node_root/current" 2>/dev/null; then
+        :
+      else
+        rm -rf "$node_root/current"
+        mv "$next_link" "$node_root/current"
+      fi
+    else
+      rm -rf "$next_link" "$node_root/current"
+      mv "$install_dir" "$node_root/current"
+    fi
   fi
 
   rm -rf "$tmp_dir"
@@ -399,6 +456,7 @@ fi
 preflight_supported_runtime_platform
 
 if install_complete; then
+  verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
   exit 0
@@ -489,7 +547,7 @@ fi
 # claude-smart's backend loads ~/.claude-smart/.env (backend-service.sh exports
 # REFLEXIO_ENV_FILE so reflexio's CLI reads it instead of ~/.reflexio/.env);
 # append our opt-in flags there so `reflexio services start` picks them up. Keep
-# this path in sync with env_config.REFLEXIO_ENV_PATH and backend-service.sh.
+# this path in sync with env_config.CLAUDE_SMART_ENV_PATH and backend-service.sh.
 REFLEXIO_ENV="$HOME/.claude-smart/.env"
 mkdir -p "$(dirname "$REFLEXIO_ENV")"
 claude_smart_env_quote() {
@@ -562,6 +620,9 @@ claude_smart_prune_managed_env_keys_for_local() {
 }
 
 claude_smart_ensure_local_env_defaults() {
+  local local_cli_default local_embedding_default
+  local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
+  local_embedding_default="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
   [ -z "${REFLEXIO_API_KEY:-}" ] || return 0
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
@@ -569,23 +630,29 @@ claude_smart_ensure_local_env_defaults() {
   claude_smart_prune_managed_env_keys_for_local
   unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
-    printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "1"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
+    printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
     printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "1"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "$local_embedding_default"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=$local_embedding_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$REFLEXIO_ENV"; then
     claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
     echo "[claude-smart] appended CLAUDE_SMART_READ_ONLY=0 to $REFLEXIO_ENV" >&2
   fi
+  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=' "$REFLEXIO_ENV"; then
+    claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"
+    echo "[claude-smart] appended CLAUDE_SMART_HOST=claude-code to $REFLEXIO_ENV" >&2
+  fi
   chmod 600 "$REFLEXIO_ENV"
 }
 
 claude_smart_ensure_local_env_defaults
+# No-op outside Git Bash/MSYS/Cygwin; non-Windows installs must not depend on it.
+verify_windows_local_embedding_runtime
 
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but
@@ -599,9 +666,23 @@ if [ -f "$REFLEXIO_ENV" ] && grep -qE '^REFLEXIO_URL=("http://localhost:8081/?"|
   echo "[claude-smart] migrated REFLEXIO_URL 8081 → 8071 in $REFLEXIO_ENV (backup at $REFLEXIO_ENV.bak)" >&2
 fi
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until it's installed" >&2
-fi
+case "${CLAUDE_SMART_HOST:-claude-code}" in
+  opencode)
+    if [ -z "${CLAUDE_SMART_OPENCODE_PATH:-}" ] && ! command -v opencode >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'opencode' CLI not on PATH and CLAUDE_SMART_OPENCODE_PATH is not set — reflexio extractors will have no LLM until OpenCode is installed" >&2
+    fi
+    ;;
+  codex)
+    if ! command -v codex >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'codex' CLI not on PATH — reflexio extractors will have no LLM until Codex is installed" >&2
+    fi
+    ;;
+  *)
+    if ! command -v claude >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until Claude Code is installed" >&2
+    fi
+    ;;
+esac
 
 LEGACY_CS_CITE="$HOME/.claude-smart/bin/cs-cite"
 if [ -e "$LEGACY_CS_CITE" ]; then

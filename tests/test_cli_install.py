@@ -9,7 +9,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 from claude_smart import cli
 
 
@@ -177,7 +177,7 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
         return argparse.Namespace(returncode=0)
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda: False)
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(
         cli, "_bootstrap_claude_code_install", lambda: (True, str(tmp_path / "plugin"))
@@ -196,8 +196,8 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
 
 
 def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    env_path = tmp_path / ".claude-smart" / ".env"
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
 
     read_only = cli._configure_reflexio_setup()
 
@@ -209,18 +209,62 @@ def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) ->
     assert env_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_install_setup_updates_existing_host_and_local_defaults(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        "# keep\n"
+        "CLAUDE_SMART_HOST=codex\n"
+        'CLAUDE_SMART_READ_ONLY="1"\n'
+    )
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "0")
+
+    read_only = cli._configure_reflexio_setup(host="opencode")
+
+    text = env_path.read_text()
+    assert read_only is True
+    assert "# keep" in text
+    assert "CLAUDE_SMART_HOST=opencode" in text
+    assert "CLAUDE_SMART_HOST=codex" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+    assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+
+
+def test_opencode_install_persists_resolved_cli_path(monkeypatch, tmp_path: Path) -> None:
+    runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    opencode = tmp_path / "bin" / "opencode"
+    opencode.parent.mkdir()
+    opencode.write_text("#!/bin/sh\nexit 0\n")
+    opencode.chmod(0o755)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", runtime_env_path)
+    monkeypatch.setenv("PATH", str(opencode.parent))
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", "")
+
+    added = cli._persist_opencode_path()
+
+    assert added == ["CLAUDE_SMART_OPENCODE_PATH"]
+    assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode}"' in runtime_env_path.read_text()
+    assert not (tmp_path / ".reflexio" / ".env").exists()
+    assert os.environ["CLAUDE_SMART_OPENCODE_PATH"] == str(opencode)
+
+
 def test_install_setup_reads_managed_reflexio_from_env(
     monkeypatch,
     tmp_path: Path,
     capsys,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         '# keep\nUNKNOWN=value\nREFLEXIO_URL="https://managed.example/"\n'
         'REFLEXIO_API_KEY="rflx-test-secret"\n'
     )
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
 
     read_only = cli._configure_reflexio_setup()
 
@@ -241,12 +285,12 @@ def test_install_setup_reads_read_only_from_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_READ_ONLY="1"\n'
     )
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
 
     read_only = cli._configure_reflexio_setup()
 
@@ -257,10 +301,10 @@ def test_install_setup_ignores_stale_url_without_api_key(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setenv("REFLEXIO_URL", "https://stale.example/")
 
     read_only = cli._configure_reflexio_setup()
@@ -469,12 +513,12 @@ def test_cmd_update_reads_managed_reflexio_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'
     )
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(
         cli.subprocess, "run", lambda *a, **kw: argparse.Namespace(returncode=0)

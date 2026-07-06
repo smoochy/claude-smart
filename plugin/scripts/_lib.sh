@@ -71,7 +71,11 @@ claude_smart_prepend_astral_bins() {
 claude_smart_prepend_node_bins() {
   local _CS_NODE_ROOT
   _CS_NODE_ROOT="$HOME/.claude-smart/node/current"
-  export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
+  if claude_smart_is_windows; then
+    export PATH="$_CS_NODE_ROOT:$PATH"
+  else
+    export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
+  fi
 }
 
 claude_smart_env_unquote() {
@@ -89,7 +93,7 @@ claude_smart_env_unquote() {
 claude_smart_source_reflexio_env() {
   # claude-smart's env lives at ~/.claude-smart/.env (kept separate from the OSS
   # reflexio default ~/.reflexio/.env). Stays in sync with
-  # env_config.REFLEXIO_ENV_PATH and the REFLEXIO_ENV_FILE export in
+  # env_config.CLAUDE_SMART_ENV_PATH and the REFLEXIO_ENV_FILE export in
   # backend-service.sh.
   local env_file line key value
   env_file="$HOME/.claude-smart/.env"
@@ -117,7 +121,7 @@ claude_smart_source_reflexio_env() {
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
+      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"
@@ -210,16 +214,54 @@ claude_smart_is_windows() {
   esac
 }
 
+claude_smart_to_windows_path() {
+  local path
+  path="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$path"
+    return $?
+  fi
+  # Convert MSYS/Cygwin/WSL-style paths to native Windows paths for cmd.exe.
+  printf '%s\n' "$path" | awk '
+  function slash_to_backslash(value) {
+    gsub(/\//, "\\", value)
+    return value
+  }
+  function drive_path(drive, rest) {
+    drive = toupper(drive)
+    sub(/^\//, "", rest)
+    if (rest == "") {
+      return drive ":\\"
+    }
+    return drive ":\\" slash_to_backslash(rest)
+  }
+  {
+    normalized = $0
+    gsub(/\\/, "/", normalized)
+    if (normalized ~ /^[A-Za-z]:($|\/)/) {
+      print drive_path(substr(normalized, 1, 1), substr(normalized, 3))
+    } else if (normalized ~ /^\/cygdrive\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 11, 1), substr(normalized, 12))
+    } else if (normalized ~ /^\/mnt\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 6, 1), substr(normalized, 7))
+    } else if (normalized ~ /^\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 2, 1), substr(normalized, 3))
+    } else {
+      print slash_to_backslash(normalized)
+    }
+  }'
+}
+
 # Print the absolute path of a working python interpreter, or nothing
 # (and return non-zero) if none is usable. On Windows, `python3` is
 # usually the Microsoft Store "App Execution Alias" stub at
 # %LocalAppData%\Microsoft\WindowsApps\python3.exe — `command -v python3`
 # returns truthy but invoking it just prints a "Python was not found"
 # message and exits non-zero. We probe with `-V` to filter the stub out
-# and prefer `python` (the real interpreter when one is installed).
+# and prefer the Windows `py` launcher before `python`/`python3`.
 claude_smart_resolve_python() {
   if claude_smart_is_windows; then
-    for cand in python python3; do
+    for cand in py python python3; do
       if command -v "$cand" >/dev/null 2>&1 && "$cand" -V >/dev/null 2>&1; then
         command -v "$cand"
         return 0
@@ -508,13 +550,23 @@ claude_smart_node_satisfies() {
 
 claude_smart_resolve_npm() {
   local cand
-  for cand in npm npm.cmd; do
+  for cand in npm npm.cmd npm.exe; do
     if command -v "$cand" >/dev/null 2>&1; then
       command -v "$cand"
       return 0
     fi
   done
   return 1
+}
+
+claude_smart_opencode_compat_path() {
+  local plugin_root filename
+  plugin_root="$1"
+  filename="opencode-claude-compat"
+  if claude_smart_is_windows; then
+    filename="opencode-claude-compat.cmd"
+  fi
+  printf '%s\n' "$plugin_root/scripts/$filename"
 }
 
 claude_smart_npm_available() {
