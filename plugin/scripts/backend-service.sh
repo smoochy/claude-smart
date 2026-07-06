@@ -230,9 +230,13 @@ reap_port_listeners() {
   [ -z "$candidates" ] && return 0
   ours=""
   for pid in $candidates; do
+    cmdline=""
     if command -v ps >/dev/null 2>&1; then
       cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
-    else
+    fi
+    # Git Bash ships `ps` but it may not support `-o command=` or resolve a
+    # native PID from netstat, leaving cmdline empty — fall back to tasklist.
+    if [ -z "$cmdline" ]; then
       cmdline=$(pid_cmdline_win "$pid")
     fi
     for pattern in "$@"; do
