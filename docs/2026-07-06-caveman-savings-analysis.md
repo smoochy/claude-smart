@@ -21,14 +21,15 @@ on their own merits, not sold as efficiency wins.
 Three hard numbers drive this:
 
 1. **[M]** Current injection footprint is **0 tokens** — the local reflexio
-   store has 0 distilled playbooks/preferences (46 raw interactions, nothing
+   store has 0 distilled playbooks/preferences (~50 raw interactions, nothing
    learned yet). There is nothing to compress today.
 2. **[P]** At the shipped defaults (citations on, markdown links), the "compact"
    renderer is **−12% to −22%** *larger* than the normal renderer at 20–50
    learned items. It only compresses (~14%) with citations off.
 3. **[M]** Even the *whole* injection is only **2–11%** of a median session's
-   input (35,357 tok). A ~14% shave of an 11% slice is ~1.5% of the session —
-   before the default-settings sign flip erases it.
+   input (35,357 tok). The at-best ~14% shave of an 11% slice is ~1.5% of the
+   session — and that shave is partly metadata omission, and is erased (sign
+   flips negative) at default settings past ~5 learned items.
 
 ## Channel 1 — injection weight, normal vs compact renderer
 
@@ -50,13 +51,25 @@ empty until reflexio distills playbooks/preferences.
 | citations **off** | 20 | 1483 | 1273 | 210 | +14.2% |
 | citations **off** | 50 | 3691 | 3163 | 528 | +14.3% |
 
-**Finding.** The compact renderer's *content* format is ~14% smaller (citations
-off, all scales). But at the **default** (citations on) its compact citation
-instruction builds a single marker that concatenates every item's linked
-title+URL (`" | ".join(marker_parts)` in `_compact_citation_instruction`). That
-marker grows with N and **overtakes the content savings past ~5 items**, making
-"compact" a net *expansion* at realistic memory scale. This is a real
-inefficiency in the compact citation path, independent of caveman.
+**Finding.** The citations-off delta (~14%) is **not lossless compression**: the
+compact item is `{content} (title:…; open:…)` and **drops the `trigger` and
+`rationale` fields entirely** (the normal bullet keeps `_(when: trigger)_` and
+`— why: rationale`). So most of that "saving" is metadata omission (losing the
+when/why), not format compression. This matters two ways:
+
+- The synthetic items here carry a fat `trigger`+`rationale`. **Real distilled
+  playbooks are often leaner** — if they are, the normal render shrinks and
+  compact is net-negative at **all N**, not just >5. The crossover point is
+  entirely a function of how much when/why metadata real items carry.
+- At the **default** (citations on) the compact citation instruction builds a
+  single marker concatenating every item's linked title+URL
+  (`" | ".join(marker_parts)` in `_compact_citation_instruction`), O(N) in the
+  store size. That marker overtakes even the lossy content delta **past ~5
+  items**, making "compact" a net *expansion* at realistic scale.
+
+Either way the direction is the same: switching to compact does not save tokens
+at default settings and realistic memory, and where it appears to, it is partly
+throwing away the when/why metadata the model uses.
 
 ## Channel 2 — share of session input
 
@@ -76,6 +89,12 @@ median peak session input is **35,357 tokens** (p90 70,898). Against that, the
 Even a heavily-trained store (N=50) is ~11% of session input; the compressible
 *delta* on top of that is the ~14%/−22% from Channel 1 — i.e. **~1.5% of the
 session at best, negative at defaults.**
+
+Caveat on framing: this is a **per-snapshot** share. If the inline injection is
+relevance-ranked per prompt (varies turn to turn), it busts prompt caching and
+the cumulative cost is `injection × turns`, not injection once. That does not
+change the per-snapshot ceiling above, but anyone reframing the claim as "% of
+total session cost" gets a different (larger absolute, same-direction) number.
 
 ## Channel 3 — caveman output savings (reference)
 
@@ -112,9 +131,15 @@ volume against. n insufficient — no conclusion.
 - **Bild 3 (dashboard visualization of caveman stats):** fine as a UI feature;
   no token-savings claim attached. Independent, low-risk.
 - **Do NOT auto-switch to the compact renderer when caveman is active.** At
-  default settings it *increases* injected tokens past ~5 learned items. If the
-  compact path is ever wanted, first fix the citation-marker scaling — worth a
-  separate upstream note to ReflexioAI regardless of caveman.
+  default settings it *increases* injected tokens past ~5 learned items, and its
+  apparent small-N win comes partly from dropping the when/why metadata.
+- **Separate upstream note to ReflexioAI (correctness, not just tokens):** the
+  compact citation marker pre-concatenates **every** memory's title+URL and
+  instructs "copy this final marker exactly," regardless of which memories were
+  actually used — forcing over-citation of all N items and duplicating each URL
+  (once inline as `open:`, once in the marker). The normal path gives an
+  *example* marker and lets the model cite only what it used. Worth reporting
+  independent of caveman; lead with the over-citation correctness angle.
 
 ## Limitations
 
