@@ -137,6 +137,16 @@ def test_service_status_returns_probe_failed_when_bash_missing(
     assert cli._service_status(script, wait_ready_s=0.0) == "probe_failed"
 
 
+def test_degraded_backend_status_is_treated_as_running() -> None:
+    status = (
+        "running on http://localhost:8071 "
+        "(embedding degraded on http://127.0.0.1:8072)"
+    )
+
+    assert cli._is_running_status(status)
+    assert not cli._is_confirmed_stopped_status(status)
+
+
 def test_clear_all_aborts_when_initial_backend_status_probe_fails(
     clear_all_harness, capsys
 ) -> None:

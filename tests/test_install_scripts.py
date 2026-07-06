@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -2030,6 +2031,160 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
     assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' in backend
     assert "REFLEXIO_EMBEDDING_PROVIDER:-local_service" in backend
     assert "REFLEXIO_EMBEDDING_SERVICE_URL" in backend
+
+
+def test_backend_service_reports_local_embedding_degradation_without_cache_repair(
+    tmp_path: Path,
+) -> None:
+    """claude-smart reports degraded vectors; Reflexio owns MiniLM cache repair."""
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert "embedding_healthy()" in backend
+    assert 'http://127.0.0.1:$EMBEDDING_PORT/health' in backend
+    assert "--connect-timeout 1 --max-time 1" in backend
+    assert "wait_for_health()" in backend
+    assert "wait_for_health backend_healthy 10 1" in backend
+    assert "wait_for_health embedding_healthy 5 3" in backend
+    assert "spawn_backend()" not in backend
+    assert "Embedding service did not become healthy" in backend
+    assert "semantic retrieval remains unavailable" in backend
+    assert "clear_minilm_cache" not in backend
+    assert "clearing MiniLM cache" not in backend
+    assert "restarting local services" not in backend
+    assert "backend_healthy && embedding_healthy" not in backend
+    start_match = re.search(r"(?ms)^  start\)\n(?P<body>.*?)(?=^  stop\)\n)", backend)
+    assert start_match, "backend-service.sh start case not found"
+    start_case = start_match.group("body")
+    assert "full_stop" not in start_case
+    assert "backend_started" not in start_case
+    assert "if wait_for_health backend_healthy 10 1; then" in start_case
+    assert "if ! wait_for_health embedding_healthy 5 3; then" in start_case
+    assert (
+        "running on http://localhost:$PORT "
+        "(embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
+    ) in backend
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "curl",
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/curl.log"\n'
+        'case " $* " in\n'
+        '  *" http://127.0.0.1:8071/health "*) exit 0 ;;\n'
+        '  *" http://127.0.0.1:8072/health "*) exit 22 ;;\n'
+        "esac\n"
+        "exit 22\n",
+    )
+    _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+    env = _isolated_env(tmp_path)
+    env.update(
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+            "CLAUDE_SMART_HOST": "codex",
+            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+            "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "1",
+        }
+    )
+
+    status = subprocess.run(
+        ["bash", str(REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"), "status"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert status.returncode == 0, status.stderr
+    assert status.stdout.strip() == (
+        "running on http://localhost:8071 "
+        "(embedding degraded on http://127.0.0.1:8072)"
+    )
+
+    start = subprocess.run(
+        ["bash", str(REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"), "start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=25,
+    )
+    assert start.returncode == 0, start.stderr
+    assert start.stdout.strip() == '{"continue":true}'
+    backend_log = (tmp_path / ".claude-smart" / "backend.log").read_text()
+    assert "Embedding service did not become healthy" in backend_log
+    assert "semantic retrieval remains unavailable" in backend_log
+    assert "clearing MiniLM cache" not in backend_log
+    assert "restarting local services" not in backend_log
+
+    cold_home = tmp_path / "cold-start"
+    cold_plugin_root = _seed_fake_claude_cache(cold_home)
+    fake_python = (
+        cold_plugin_root
+        / ".venv"
+        / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
+    fake_python.parent.mkdir(parents=True)
+    _write_executable(
+        fake_python,
+        "#!/bin/sh\n"
+        'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+        'if [ "$1" = "-m" ]; then\n'
+        '  printf "spawned backend\\n" >> "$HOME/python.log"\n'
+        "fi\n"
+        "exit 0\n",
+    )
+    cold_bin_dir = cold_home / "bin"
+    cold_bin_dir.mkdir()
+    _write_executable(
+        cold_bin_dir / "uv",
+        "#!/bin/sh\n"
+        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
+        "exit 0\n",
+    )
+    _write_executable(cold_bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        cold_bin_dir / "curl",
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/curl.log"\n'
+        'case " $* " in\n'
+        '  *" http://127.0.0.1:8071/health "*)\n'
+        '    count=$(cat "$HOME/backend-health-count" 2>/dev/null || echo 0)\n'
+        '    count=$((count + 1))\n'
+        '    printf "%s\\n" "$count" > "$HOME/backend-health-count"\n'
+        '    [ "$count" -ge 3 ] && exit 0\n'
+        "    exit 22\n"
+        "    ;;\n"
+        '  *" http://127.0.0.1:8072/health "*) exit 22 ;;\n'
+        "esac\n"
+        "exit 22\n",
+    )
+    cold_env = _isolated_env(cold_home)
+    cold_env.update(
+        {
+            "PATH": f"{cold_bin_dir}{os.pathsep}{cold_env['PATH']}",
+            "CLAUDE_SMART_HOST": "codex",
+            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+            "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "1",
+        }
+    )
+
+    cold_start = subprocess.run(
+        ["bash", str(cold_plugin_root / "scripts" / "backend-service.sh"), "start"],
+        env=cold_env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=25,
+    )
+    assert cold_start.returncode == 0, cold_start.stderr
+    assert cold_start.stdout.strip() == '{"continue":true}'
+    assert "spawned backend" in (cold_home / "python.log").read_text()
+    cold_backend_log = (cold_home / ".claude-smart" / "backend.log").read_text()
+    assert "Embedding service did not become healthy" in cold_backend_log
+    assert "semantic retrieval remains unavailable" in cold_backend_log
+    assert "clearing MiniLM cache" not in cold_backend_log
+    assert "restarting local services" not in cold_backend_log
 
 
 def test_backend_service_full_stop_reaps_embedding_port() -> None:
