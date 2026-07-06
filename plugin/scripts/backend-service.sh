@@ -71,7 +71,8 @@ if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
     # resolves opencode from CLAUDE_SMART_OPENCODE_PATH or PATH; don't require
     # Git Bash's PATH to match the installer shell's PATH here.
     claude_smart_prepend_node_bins
-    export CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
+    CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
+    export CLAUDE_SMART_CLI_PATH
   elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
@@ -139,7 +140,30 @@ kill_group() {
 # you'll get collision regardless of what we do here.
 backend_healthy() {
   command -v curl >/dev/null 2>&1 || return 1
-  curl -sf -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null
+  curl -sf --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null
+}
+
+embedding_healthy() {
+  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -sf --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$EMBEDDING_PORT/health" 2>/dev/null
+}
+
+wait_for_health() {
+  probe_fn="$1"
+  attempts="$2"
+  interval="$3"
+  while [ "$attempts" -gt 0 ]; do
+    "$probe_fn" && return 0
+    attempts=$((attempts - 1))
+    sleep "$interval"
+  done
+  "$probe_fn"
+}
+
+log_embedding_degraded() {
+  claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+    "[claude-smart] backend: Embedding service did not become healthy on port $EMBEDDING_PORT; semantic retrieval remains unavailable until the local embedding daemon recovers"
 }
 
 # True only if the recorded PID is alive AND /health responds. A stale
@@ -275,12 +299,14 @@ case "$CMD" in
     if [ "${CLAUDE_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
       emit_ok; exit 0
     fi
-    if is_our_backend_running; then emit_ok; exit 0; fi
+    if is_our_backend_running; then
+      embedding_healthy || log_embedding_degraded
+      emit_ok; exit 0
+    fi
     if port_occupied; then
-      # Something answered the TCP probe but /health didn't — don't
-      # start a second uvicorn on top of it. Surface the holder so the
-      # user knows which process to quit (common case: editor/dev tool
-      # squatting 8071) instead of silently failing.
+      # is_our_backend_running already ruled out a healthy Reflexio backend.
+      # Anything still holding the port would make uvicorn fail to bind, so
+      # surface the holder instead of silently starting into a collision.
       holder="$(port_holder "$PORT" 2>/dev/null || true)"
       msg="[claude-smart] backend: port $PORT held by another process${holder:+ ($holder)}; skipping start"
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "$msg"
@@ -350,27 +376,27 @@ case "$CMD" in
     # Claude Code sessions or wanting zero-downtime recycling.
     workers="${CLAUDE_SMART_BACKEND_WORKERS:-1}"
     backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
+    # setsid/python os.setsid make this pid the new process group leader;
+    # sampling immediately can race and capture the caller's pgid instead.
+    # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
       PYTHONPATH="$backend_pythonpath" \
       "$backend_python" -m reflexio.cli services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
-    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
-    # setsid/python os.setsid make this pid the new process group leader;
-    # sampling immediately can race and capture the caller's pgid instead.
-    # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
     echo "$svc_pid" > "$PID_FILE"
 
-    # Give uvicorn up to ~10s to answer /health. The very first boot
-    # after a fresh checkout may be slower (LiteLLM import, chromadb
-    # warmup) — dashboard auto-start does the same thing. We always
-    # return ok; the backend catches up in background if it needs to.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      backend_healthy && break
-      sleep 1
-    done
-    if ! backend_healthy; then
+    # Give uvicorn about 20s to answer /health. The first boot after a fresh
+    # checkout may be slower; if it catches up later, the next hook observes it.
+    if wait_for_health backend_healthy 10 1; then
+      # The Node installer waits 45s for this script. Each curl probe is also
+      # bounded so a wedged listener cannot outlive the caller's timeout budget.
+      if ! wait_for_health embedding_healthy 5 3; then
+        log_embedding_degraded
+      fi
+    else
       pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
         reason=$(tail -n 120 "$LOG_FILE" 2>/dev/null | grep -E "No LLM provider available|No generation-capable LLM provider available|CLI not found|skipping provider registration|Application startup failed" | tail -n 1 | sed 's/^[[:space:]]*//')
@@ -396,8 +422,12 @@ case "$CMD" in
   status)
     if claude_smart_reflexio_url_is_remote; then
       echo "remote configured at $REFLEXIO_URL"
-    elif is_our_backend_running; then
-      echo "running on http://localhost:$PORT"
+    elif backend_healthy; then
+      if embedding_healthy; then
+        echo "running on http://localhost:$PORT"
+      else
+        echo "running on http://localhost:$PORT (embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
+      fi
     else
       echo "not running"
     fi
