@@ -127,11 +127,15 @@ class Adapter:
                 _LOGGER.debug(
                     "publish_interaction client does not support override_learning_stall"
                 )
-            result: dict[str, Any] = {"ok": False}
+            result: dict[str, Any] = {"ok": False, "error": None}
 
             def _do_publish() -> None:
-                client.publish_interaction(**kwargs)
-                result["ok"] = True
+                try:
+                    client.publish_interaction(**kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    result["error"] = exc
+                else:
+                    result["ok"] = True
 
             worker = threading.Thread(target=_do_publish, daemon=True)
             worker.start()
@@ -142,6 +146,9 @@ class Adapter:
                     "dropped (buffer retries next turn)",
                     _PUBLISH_WALL_TIMEOUT_SECONDS,
                 )
+                return False
+            if result["error"] is not None:
+                _LOGGER.warning("publish_interaction failed: %s", result["error"])
                 return False
             return result["ok"]
         except Exception as exc:  # noqa: BLE001
