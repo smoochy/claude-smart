@@ -1413,7 +1413,7 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
 
     assert "claude_smart_is_internal_invocation_env()" in lib
     assert "CLAUDE_CODE_ENTRYPOINT" in lib
-    assert '"cli"|"claude-desktop"' in lib
+    assert '"cli"|"claude-desktop"|"claude-vscode"|"claude-jetbrains"' in lib
     assert "if claude_smart_is_internal_invocation_env; then" in hook_entry
     assert "if claude_smart_is_internal_invocation_env; then" in backend
     assert "if claude_smart_is_internal_invocation_env; then" in dashboard

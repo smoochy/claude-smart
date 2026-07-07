@@ -148,7 +148,7 @@ claude_smart_is_internal_invocation_env() {
     return 0
   fi
   case "${CLAUDE_CODE_ENTRYPOINT:-}" in
-    ""|"cli"|"claude-desktop") return 1 ;;
+    ""|"cli"|"claude-desktop"|"claude-vscode"|"claude-jetbrains") return 1 ;;
     *) return 0 ;;
   esac
 }

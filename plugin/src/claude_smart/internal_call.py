@@ -20,7 +20,8 @@ Two distinct sources of unwanted hook fires:
 
 Detection signals, OR'd:
   - ``CLAUDE_CODE_ENTRYPOINT`` is anything other than an interactive entrypoint
-    (``"cli"`` or Claude Desktop's ``"claude-desktop"``). Headless
+    (``"cli"``, Claude Desktop's ``"claude-desktop"``, or Claude Code IDE
+    entrypoints such as ``"claude-vscode"``/``"claude-jetbrains"``). Headless
     ``claude -p`` sets ``sdk-cli`` (and the SDKs may set other values). This
     catches case (2) for any third-party tool, not just claude-mem.
   - Env var ``CLAUDE_SMART_INTERNAL=1``, set by reflexio's provider
@@ -46,7 +47,9 @@ from typing import Any
 from claude_smart import runtime
 
 _ENTRYPOINT_VAR = "CLAUDE_CODE_ENTRYPOINT"
-_INTERACTIVE_ENTRYPOINTS = frozenset({"cli", "claude-desktop"})
+_INTERACTIVE_ENTRYPOINTS = frozenset(
+    {"cli", "claude-desktop", "claude-vscode", "claude-jetbrains"}
+)
 _CODEX_TITLE_PROMPT_PREFIX = (
     "You are a helpful assistant. You will be presented with a user prompt, "
     "and your job is to provide a short title for a task"
