@@ -1,6 +1,6 @@
 # Developer Guide
 
-Internal notes for maintainers of `claude-smart`. End-user install instructions live in [README.md](./README.md); this file covers the release loop.
+Internal notes for maintainers of `claude-smart`. End-user install instructions live in [README.md](./README.md); this file covers per-host install details and the release loop.
 
 ## Repository layout
 
@@ -92,6 +92,37 @@ Also check the published package surface:
 ```bash
 npm pack --dry-run --json
 ```
+
+## Host install notes
+
+Condensed install/uninstall commands live in the [README Quick Start](./README.md#quick-start); this section holds the per-host details behind them.
+
+### Claude Code
+
+`npx claude-smart install` registers the bundled package as a marketplace and installs the plugin. The manual marketplace equivalent:
+
+```bash
+claude plugin marketplace add ReflexioAI/claude-smart
+claude plugin install claude-smart@reflexioai
+```
+
+If installed via the marketplace, uninstall with `claude plugin uninstall claude-smart@reflexioai` instead of `npx claude-smart uninstall`.
+
+### Codex
+
+`npx claude-smart uninstall --host codex` stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with the other hosts.
+
+### OpenCode
+
+**Config resolution.** The installer writes the plugin entry to `opencode.json`, the documented project config file. If the project has no root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. `--global` installs into `~/.config/opencode/opencode.json` for all OpenCode projects on the machine.
+
+**Runtime copy.** The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart. It prepares claude-smart's runtime dependencies but expects the OpenCode CLI to already be installed; it resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts. Set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
+
+**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+
+**Windows.** On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. The installer also checks the Windows local embedding runtime and writes actionable setup failures to `~/.claude-smart/install-failed`.
+
+**Uninstall.** `npx claude-smart uninstall --host opencode` removes the `claude-smart` entry from OpenCode's plugin list and deletes the copied OpenCode package; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved.
 
 ## Public terminology and storage names
 

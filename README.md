@@ -58,6 +58,8 @@
 
 ## Quick Start
 
+Requires Node.js 20+ (for `npx`) and the host CLI you're installing into (`claude`, `codex`, or `opencode`) on `PATH`.
+
 ### Claude Code
 
 ```bash
@@ -65,27 +67,6 @@ npx claude-smart install
 ```
 
 Then restart Claude Code.
-
-Requires Node.js (for `npx`) to already exist.
-
-Alternatively, install via Claude Code's plugin marketplace:
-
-```bash
-claude plugin marketplace add ReflexioAI/claude-smart
-claude plugin install claude-smart@reflexioai
-```
-
-To uninstall:
-
-```bash
-npx claude-smart uninstall
-```
-
-Or, if installed via the plugin marketplace:
-
-```bash
-claude plugin uninstall claude-smart@reflexioai
-```
 
 ### Codex
 
@@ -95,39 +76,25 @@ npx claude-smart install --host codex
 
 Then fully quit and reopen Codex so hooks reload.
 
-Requires the `codex` CLI on `PATH` and Node.js (for `npx`).
-
-To uninstall:
-
-```bash
-npx claude-smart uninstall --host codex
-```
-
-Restart Codex after uninstalling. The uninstaller stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with Claude Code, so you can switch between hosts without losing skills or preferences.
-
 ### OpenCode
 
 ```bash
 npx claude-smart install --host opencode
 ```
 
-Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine. The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart.
+Then restart OpenCode in your project so it loads the plugin from `opencode.json`. Add `--global` to install for all OpenCode projects on this machine instead.
 
-The installer prepares claude-smart's runtime dependencies, but expects the OpenCode CLI to already be installed. It resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts; set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
-
-OpenCode support is new and uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
-
-On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. The installer also checks the Windows local embedding runtime and writes actionable setup failures to `~/.claude-smart/install-failed`.
-
-To uninstall:
+### Uninstall
 
 ```bash
-npx claude-smart uninstall --host opencode
+npx claude-smart uninstall                    # Claude Code
+npx claude-smart uninstall --host codex       # Codex
+npx claude-smart uninstall --host opencode    # OpenCode
 ```
 
-Restart OpenCode after uninstalling. The uninstaller removes the `claude-smart` entry from OpenCode's plugin list and deletes the copied OpenCode package; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts.
+Restart the host afterward. Learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts, so you can uninstall or switch hosts without losing skills or preferences.
 
-Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally) for what the installer does, manual toggles via `/plugins`, and clone-based development.
+For per-host details — the Claude Code plugin-marketplace alternative, what the installers and uninstallers touch, OpenCode config resolution and model/env overrides, and Windows notes — see [Host install notes](./DEVELOPER.md#host-install-notes) in DEVELOPER.md. Developing the plugin itself? See [Developing locally](./DEVELOPER.md#developing-locally).
 
 > **Not supported:** Claude Code Cowork, claude.ai/code web, or remote Codex environments without local plugin hooks — they run outside your local machine, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
 
