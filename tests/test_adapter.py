@@ -162,6 +162,55 @@ def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> No
     }
 
 
+def test_adapter_default_url_follows_backend_port(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / "missing.env"
+    )
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.setenv("BACKEND_PORT", "8171")
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    assert reflexio_adapter.Adapter()._get_client() is not None
+    assert seen == {"url_endpoint": "http://localhost:8171/", "api_key": ""}
+
+
+def test_adapter_local_default_file_url_follows_backend_port(monkeypatch, tmp_path) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_URL="http://localhost:8071/"\n')
+    monkeypatch.setattr(reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.setenv("BACKEND_PORT", "8171")
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    assert reflexio_adapter.Adapter()._get_client() is not None
+    assert seen == {"url_endpoint": "http://localhost:8171/", "api_key": ""}
+
+
 def test_publish_returns_true_on_success() -> None:
     client = _FakeClient()
     a = _adapter_with(client)
@@ -420,6 +469,25 @@ def test_search_all_makes_one_client_call() -> None:
     a = _adapter_with(client)
     a.search_all(project_id="p", query="q")
     assert client.search_call_count == 1
+
+
+def test_search_all_passes_session_id_for_server_side_dedup() -> None:
+    """session_id scopes the server's per-session result dedup."""
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+    )
+    a = _adapter_with(client)
+    a.search_all(project_id="p", query="q", session_id="sess-1")
+    assert client.search_kwargs["session_id"] == "sess-1"
+
+
+def test_search_all_session_id_defaults_to_none() -> None:
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+    )
+    a = _adapter_with(client)
+    a.search_all(project_id="p", query="q")
+    assert client.search_kwargs["session_id"] is None
 
 
 def test_search_all_returns_three_empty_lists_on_error() -> None:
