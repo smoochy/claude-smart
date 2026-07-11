@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tier A Replay Split-Judge Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #181b20;
+      --panel-2: #20242b;
+      --ink: #f2f4f8;
+      --muted: #aeb7c4;
+      --faint: #747f8f;
+      --line: #343b46;
+      --accent: #7dd3fc;
+      --good: #4ade80;
+      --bad: #fb7185;
+      --warn: #fbbf24;
+      --enabled: #5eead4;
+      --disabled: #c4b5fd;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.48 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(16, 17, 20, 0.95);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+    }
+
+    .wrap {
+      max-width: 1540px;
+      margin: 0 auto;
+      padding: 18px 22px;
+    }
+
+    h1, h2, h3 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 17px; margin-bottom: 12px; }
+    h3 { font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+
+    .subtle { color: var(--muted); }
+    .tiny { color: var(--faint); font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    .top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .tabs, .chips, .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .tabs { margin-top: 14px; }
+    .toolbar { margin-bottom: 14px; }
+
+    button, input, select {
+      color: var(--ink);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+
+    button { cursor: pointer; }
+    button:hover, button.active { border-color: var(--accent); background: #24313a; }
+    input { flex: 1; min-width: min(460px, 100%); }
+
+    .hidden { display: none !important; }
+
+    .panel, .metric, .case-card, .arm, .judge-box {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .panel { padding: 16px; margin-bottom: 16px; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(130px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .metric { padding: 14px; min-height: 90px; }
+    .metric strong { display: block; font-size: 25px; line-height: 1.1; margin-bottom: 8px; }
+
+    .chip {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: rgba(255,255,255,0.03);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .chip.good { color: var(--good); border-color: rgba(74,222,128,.38); }
+    .chip.bad { color: var(--bad); border-color: rgba(251,113,133,.38); }
+    .chip.warn { color: var(--warn); border-color: rgba(251,191,36,.38); }
+    .chip.enabled { color: var(--enabled); border-color: rgba(94,234,212,.38); }
+    .chip.disabled { color: var(--disabled); border-color: rgba(196,181,253,.38); }
+
+    .case-layout {
+      display: grid;
+      grid-template-columns: 390px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .case-list {
+      display: grid;
+      gap: 10px;
+      max-height: calc(100vh - 220px);
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .case-card { padding: 12px; cursor: pointer; }
+    .case-card.active { border-color: var(--accent); background: #1d252c; }
+    .case-title { font-weight: 740; margin-bottom: 8px; overflow-wrap: anywhere; }
+
+    .compare {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .arm { overflow: hidden; min-width: 0; }
+    .arm-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-2);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .arm-body {
+      padding: 14px;
+      max-height: 620px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .judge-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .judge-box { padding: 14px; border-left: 4px solid var(--accent); }
+    .judge-box.attribution { border-left-color: var(--warn); }
+
+    pre {
+      margin: 0;
+      padding: 14px;
+      background: #0b0c0f;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #d9dfe8;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: var(--panel-2); }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.025);
+      margin-top: 10px;
+    }
+    summary { cursor: pointer; color: var(--accent); font-weight: 680; }
+    details > pre { margin-top: 10px; }
+
+    @media (max-width: 1180px) {
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .case-layout, .compare, .judge-grid { grid-template-columns: 1fr; }
+      .case-list { max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="top">
+        <div>
+          <h1>Tier A Replay Split-Judge Viewer</h1>
+          <div id="runLabel" class="subtle mono">Loading...</div>
+        </div>
+        <div id="statusChips" class="chips"></div>
+      </div>
+      <nav class="tabs">
+        <button class="active" data-tab="overview">Overview</button>
+        <button data-tab="cases">Cases</button>
+        <button data-tab="report">Report</button>
+        <button data-tab="state">State & Logs</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="tab-overview"></section>
+    <section id="tab-cases" class="hidden"></section>
+    <section id="tab-report" class="hidden"></section>
+    <section id="tab-state" class="hidden"></section>
+  </main>
+
+  <script>
+    const S = {
+      rows: [],
+      aggregate: {},
+      preflight: {},
+      postflight: {},
+      availability: {},
+      report: "",
+      impact: "",
+      selected: 0,
+      textCache: new Map(),
+      learningCache: new Map()
+    };
+
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+    function esc(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function chip(text, type = "") {
+      return `<span class="chip ${type}">${esc(text)}</span>`;
+    }
+
+    async function text(path) {
+      const res = await fetch(path, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${path}: ${res.status}`);
+      return res.text();
+    }
+
+    async function json(path) {
+      return JSON.parse(await text(path));
+    }
+
+    function rel(absPath) {
+      if (!absPath) return "";
+      const parts = absPath.split("/tier_a_replay/");
+      if (parts.length < 2) return absPath;
+      return parts[1].split("/").slice(1).join("/");
+    }
+
+    function responseJudge(row) {
+      return row.response_judge || row.judge || {};
+    }
+
+    function attributionJudge(row) {
+      return row.attribution_judge || {};
+    }
+
+    function winnerClass(row) {
+      const winner = responseJudge(row).winner_arm;
+      if (winner === "enabled") return "enabled";
+      if (winner === "disabled") return "disabled";
+      return "warn";
+    }
+
+    function attributionClass(row) {
+      const j = attributionJudge(row);
+      if (j.learning_hurt_enabled) return "bad";
+      if (j.learning_helped_enabled) return "good";
+      if (j.learning_relevant) return "warn";
+      return "";
+    }
+
+    function bool(value) {
+      return value ? "yes" : "no";
+    }
+
+    async function armText(row, arm) {
+      const key = `${row.case.case_id}:${arm}`;
+      if (S.textCache.has(key)) return S.textCache.get(key);
+      let out = row[arm]?.assistant_excerpt || "";
+      const path = rel(row[arm]?.assistant_path);
+      if (path) {
+        try { out = await text(path); } catch (err) { out += `\n\n[Could not load ${path}: ${err.message}]`; }
+      }
+      S.textCache.set(key, out);
+      return out;
+    }
+
+    async function learningText(row) {
+      const key = row.case.case_id;
+      if (S.learningCache.has(key)) return S.learningCache.get(key);
+      let out = row.preflight?.retrieved_learning_context || "";
+      if (!out) {
+        const path = rel(row.preflight?.context_path);
+        if (path) {
+          try { out = await text(path); } catch (err) { out = `[Could not load ${path}: ${err.message}]`; }
+        }
+      }
+      S.learningCache.set(key, out);
+      return out;
+    }
+
+    function renderHeader() {
+      $("#runLabel").textContent = `Run: ${S.aggregate.label || "(unknown)"}`;
+      const errors = (S.report.match(/Harness errors: (.*)/) || [])[1] || "unknown";
+      $("#statusChips").innerHTML = [
+        chip(`${S.rows.length} rows`, "good"),
+        chip(`${S.aggregate.judged_comparisons || 0} blind judged`, "good"),
+        chip(`${S.aggregate.attribution_judged_comparisons || 0} attribution judged`, "good"),
+        chip(errors.includes("none") ? "no harness errors" : errors, errors.includes("none") ? "good" : "warn")
+      ].join("");
+    }
+
+    function renderOverview() {
+      const a = S.aggregate;
+      $("#tab-overview").innerHTML = `
+        <div class="metrics">
+          <div class="metric"><strong>${esc(a.judged_comparisons)}</strong><span>Blind judged</span></div>
+          <div class="metric"><strong>${esc(a.enabled_wins)}</strong><span>Enabled wins</span></div>
+          <div class="metric"><strong>${esc(a.disabled_wins)}</strong><span>Disabled wins</span></div>
+          <div class="metric"><strong>${esc(a.ties_or_inconclusive)}</strong><span>Ties</span></div>
+          <div class="metric"><strong>${esc(a.material_difference)}</strong><span>Material differences</span></div>
+          <div class="metric"><strong>${esc(a.learning_helped_enabled)}</strong><span>Learning helped</span></div>
+          <div class="metric"><strong>${esc(a.learning_hurt_enabled)}</strong><span>Learning hurt</span></div>
+          <div class="metric"><strong>${esc(a.learning_relevant)}</strong><span>Learning relevant</span></div>
+        </div>
+        <div class="panel">
+          <h2>Rates</h2>
+          <table>
+            <tbody>
+              <tr><th>Enabled win rate, ties excluded</th><td>${esc(a.enabled_win_rate_ties_excluded)}</td><td>${esc(JSON.stringify(a.enabled_win_rate_ties_excluded_wilson_95))}</td></tr>
+              <tr><th>Material difference rate</th><td>${esc(a.material_difference_rate)}</td><td>${esc(JSON.stringify(a.material_difference_wilson_95))}</td></tr>
+              <tr><th>Learning helped rate</th><td>${esc(a.learning_helped_enabled_rate)}</td><td>${esc(JSON.stringify(a.learning_helped_enabled_wilson_95))}</td></tr>
+              <tr><th>Learning hurt rate</th><td>${esc(a.learning_hurt_enabled_rate)}</td><td>${esc(JSON.stringify(a.learning_hurt_enabled_wilson_95))}</td></tr>
+              <tr><th>Attribution buckets</th><td colspan="2"><span class="mono">${esc(JSON.stringify(a.attribution_counts || {}))}</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <h2>Case Matrix</h2>
+          <table>
+            <thead><tr><th>Case</th><th>Blind winner</th><th>Material</th><th>Attribution</th><th>Helped</th><th>Hurt</th><th>Learning chars</th><th>Prompt</th></tr></thead>
+            <tbody>
+              ${S.rows.map((row, i) => {
+                const rj = responseJudge(row);
+                const aj = attributionJudge(row);
+                return `<tr>
+                  <td><button data-case-jump="${i}">${esc(row.case.case_id)}</button></td>
+                  <td>${chip(rj.winner_arm || rj.winner || "?", winnerClass(row))}</td>
+                  <td>${chip(bool(rj.material_difference), rj.material_difference ? "good" : "")}</td>
+                  <td>${chip(aj.attribution || "?", attributionClass(row))}</td>
+                  <td>${chip(bool(aj.learning_helped_enabled), aj.learning_helped_enabled ? "good" : "")}</td>
+                  <td>${chip(bool(aj.learning_hurt_enabled), aj.learning_hurt_enabled ? "bad" : "")}</td>
+                  <td>${esc((row.preflight.retrieved_learning_context || "").length)}</td>
+                  <td>${esc((row.case.target_user || "").slice(0, 180))}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      $$("[data-case-jump]").forEach((btn) => btn.addEventListener("click", () => {
+        showTab("cases");
+        selectCase(Number(btn.dataset.caseJump));
+      }));
+    }
+
+    function caseCard(row, i) {
+      const rj = responseJudge(row);
+      const aj = attributionJudge(row);
+      return `<article class="case-card ${i === S.selected ? "active" : ""}" data-case="${i}">
+        <div class="case-title">${esc(row.case.case_id)}</div>
+        <div class="chips">
+          ${chip(`winner ${rj.winner_arm || "?"}`, winnerClass(row))}
+          ${chip(aj.attribution || "attribution ?", attributionClass(row))}
+          ${chip(aj.learning_helped_enabled ? "helped" : "not helped", aj.learning_helped_enabled ? "good" : "")}
+          ${chip(aj.learning_hurt_enabled ? "hurt" : "not hurt", aj.learning_hurt_enabled ? "bad" : "")}
+          ${chip(`overlap ${row.preflight.overlap_fraction}`, row.preflight.overlap_fraction === 1 ? "good" : "warn")}
+        </div>
+        <div class="tiny" style="margin-top:8px">${esc((row.case.target_user || "").slice(0, 170))}</div>
+      </article>`;
+    }
+
+    function renderCases() {
+      $("#tab-cases").innerHTML = `
+        <div class="toolbar">
+          <input id="search" placeholder="Filter by case id, prompt, judge rationale, or retrieved learning" />
+          <select id="winnerFilter">
+            <option value="">All winners</option>
+            <option value="enabled">Enabled wins</option>
+            <option value="disabled">Disabled wins</option>
+            <option value="tie">Ties</option>
+          </select>
+          <select id="attrFilter">
+            <option value="">All attribution</option>
+            <option value="helped">Learning helped</option>
+            <option value="hurt">Learning hurt</option>
+            <option value="relevant">Learning relevant</option>
+            <option value="none">Attribution none</option>
+          </select>
+        </div>
+        <div class="case-layout">
+          <aside id="caseList" class="case-list"></aside>
+          <section id="caseDetail"></section>
+        </div>
+      `;
+      const renderList = () => {
+        const q = $("#search").value.toLowerCase();
+        const winner = $("#winnerFilter").value;
+        const attr = $("#attrFilter").value;
+        const hits = S.rows.map((row, i) => ({ row, i })).filter(({ row }) => {
+          const rj = responseJudge(row);
+          const aj = attributionJudge(row);
+          const haystack = [
+            row.case.case_id,
+            row.case.target_user,
+            row.preflight.retrieved_learning_context,
+            rj.rationale,
+            aj.rationale
+          ].join(" ").toLowerCase();
+          if (q && !haystack.includes(q)) return false;
+          if (winner && rj.winner_arm !== winner) return false;
+          if (attr === "helped" && !aj.learning_helped_enabled) return false;
+          if (attr === "hurt" && !aj.learning_hurt_enabled) return false;
+          if (attr === "relevant" && !aj.learning_relevant) return false;
+          if (attr === "none" && aj.attribution !== "none") return false;
+          return true;
+        });
+        $("#caseList").innerHTML = hits.map(({ row, i }) => caseCard(row, i)).join("") || `<div class="subtle">No matching cases.</div>`;
+        $$(".case-card").forEach((card) => card.addEventListener("click", () => selectCase(Number(card.dataset.case))));
+      };
+      $("#search").addEventListener("input", renderList);
+      $("#winnerFilter").addEventListener("change", renderList);
+      $("#attrFilter").addEventListener("change", renderList);
+      renderList();
+      selectCase(S.selected);
+    }
+
+    async function selectCase(i) {
+      S.selected = i;
+      $$(".case-card").forEach((card) => card.classList.toggle("active", Number(card.dataset.case) === i));
+      const row = S.rows[i];
+      const [enabled, disabled, learning] = await Promise.all([
+        armText(row, "enabled"),
+        armText(row, "disabled"),
+        learningText(row)
+      ]);
+      const rj = responseJudge(row);
+      const aj = attributionJudge(row);
+      $("#caseDetail").innerHTML = `
+        <div class="panel">
+          <h2>${esc(row.case.case_id)}</h2>
+          <div class="chips">
+            ${chip(`blind winner ${rj.winner_arm || "?"}`, winnerClass(row))}
+            ${chip(`attribution ${aj.attribution || "?"}`, attributionClass(row))}
+            ${chip(aj.learning_helped_enabled ? "learning helped" : "learning not helped", aj.learning_helped_enabled ? "good" : "")}
+            ${chip(aj.learning_hurt_enabled ? "learning hurt" : "learning not hurt", aj.learning_hurt_enabled ? "bad" : "")}
+            ${chip(`tools: ${(row.enabled.init.tools || []).join(", ") || "none"}`, "good")}
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Target User Message</h2>
+          <pre>${esc(row.case.target_user)}</pre>
+        </div>
+        <div class="panel">
+          <h2>Actual Retrieved Learning</h2>
+          <div class="chips" style="margin-bottom:10px">
+            ${chip(`${learning.length} chars`, learning ? "good" : "warn")}
+            ${chip(`${(row.preflight.retrieved_learning_records || []).length} records`, "good")}
+            ${chip(`overlap ${row.preflight.overlap_fraction}`, row.preflight.overlap_fraction === 1 ? "good" : "warn")}
+          </div>
+          <pre>${esc(learning || "(no retrieved learning text)")}</pre>
+          <details>
+            <summary>Retrieved learning records JSON</summary>
+            <pre>${esc(JSON.stringify(row.preflight.retrieved_learning_records || [], null, 2))}</pre>
+          </details>
+        </div>
+        <div class="compare">
+          <section class="arm">
+            <div class="arm-head"><strong style="color:var(--enabled)">Enabled</strong><span class="tiny">${esc(row.enabled.duration_s)}s, rc ${esc(row.enabled.returncode)}</span></div>
+            <div class="arm-body">${esc(enabled)}</div>
+          </section>
+          <section class="arm">
+            <div class="arm-head"><strong style="color:var(--disabled)">Disabled</strong><span class="tiny">${esc(row.disabled.duration_s)}s, rc ${esc(row.disabled.returncode)}</span></div>
+            <div class="arm-body">${esc(disabled)}</div>
+          </section>
+        </div>
+        <div class="judge-grid">
+          <section class="judge-box">
+            <h2>Blind Response Judge</h2>
+            <div class="chips" style="margin-bottom:10px">
+              ${chip(`enabled shown as ${rj.enabled_was_A ? "A" : "B"}`)}
+              ${chip(`winner ${rj.winner_arm || rj.winner}`, winnerClass(row))}
+              ${chip(`material ${bool(rj.material_difference)}`, rj.material_difference ? "good" : "")}
+            </div>
+            <pre>${esc(rj.rationale)}</pre>
+          </section>
+          <section class="judge-box attribution">
+            <h2>Learning Attribution Judge</h2>
+            <div class="chips" style="margin-bottom:10px">
+              ${chip(`attribution ${aj.attribution || "?"}`, attributionClass(row))}
+              ${chip(`relevant ${bool(aj.learning_relevant)}`, aj.learning_relevant ? "warn" : "")}
+              ${chip(`helped ${bool(aj.learning_helped_enabled)}`, aj.learning_helped_enabled ? "good" : "")}
+              ${chip(`hurt ${bool(aj.learning_hurt_enabled)}`, aj.learning_hurt_enabled ? "bad" : "")}
+            </div>
+            <pre>${esc(aj.rationale)}</pre>
+          </section>
+        </div>
+        <div class="panel">
+          <h2>Validation Gates</h2>
+          <table><tbody>${Object.entries(row.validations || {}).map(([k, v]) => `<tr><th class="mono">${esc(k)}</th><td>${chip(String(v), v ? "good" : "bad")}</td></tr>`).join("")}</tbody></table>
+        </div>
+      `;
+    }
+
+    function renderReport() {
+      $("#tab-report").innerHTML = `
+        <div class="panel"><h2>Report</h2><pre>${esc(S.report)}</pre></div>
+        <div class="panel"><h2>Aggregate JSON</h2><pre>${esc(JSON.stringify(S.aggregate, null, 2))}</pre></div>
+      `;
+    }
+
+    async function renderState() {
+      const [backend, hook] = await Promise.all([
+        text("backend_log_delta.txt").catch((err) => `Could not load backend_log_delta.txt: ${err.message}`),
+        text("hook_log_delta.txt").catch((err) => `Could not load hook_log_delta.txt: ${err.message}`)
+      ]);
+      const tail = (value) => value.length > 9000 ? value.slice(value.length - 9000) : value;
+      $("#tab-state").innerHTML = `
+        <div class="panel"><h2>Preflight</h2><pre>${esc(JSON.stringify(S.preflight, null, 2))}</pre></div>
+        <div class="panel"><h2>Postflight</h2><pre>${esc(JSON.stringify(S.postflight, null, 2))}</pre></div>
+        <div class="panel"><h2>Backend Log Delta Tail</h2><pre>${esc(tail(backend))}</pre></div>
+        <div class="panel"><h2>Hook Log Delta Tail</h2><pre>${esc(tail(hook))}</pre></div>
+      `;
+    }
+
+    function showTab(tab) {
+      $$("[data-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tab));
+      ["overview", "cases", "report", "state"].forEach((name) => $(`#tab-${name}`).classList.toggle("hidden", name !== tab));
+      if (tab === "state" && !$("#tab-state").dataset.loaded) {
+        $("#tab-state").dataset.loaded = "true";
+        renderState();
+      }
+    }
+
+    async function boot() {
+      try {
+        const [dataset, aggregate, availability, preflight, postflight, report] = await Promise.all([
+          text("dataset.jsonl"),
+          json("aggregate.json"),
+          json("availability.json"),
+          json("preflight.json"),
+          json("postflight.json"),
+          text("report.md")
+        ]);
+        S.rows = dataset.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
+        S.aggregate = aggregate;
+        S.availability = availability;
+        S.preflight = preflight;
+        S.postflight = postflight;
+        S.report = report;
+        renderHeader();
+        renderOverview();
+        renderCases();
+        renderReport();
+        $$("[data-tab]").forEach((btn) => btn.addEventListener("click", () => showTab(btn.dataset.tab)));
+      } catch (err) {
+        document.body.innerHTML = `<main class="wrap"><div class="panel"><h1>Viewer failed to load</h1><pre>${esc(err.stack || err.message)}</pre><p>Serve this directory with <span class="mono">python3 -m http.server 8766</span>.</p></div></main>`;
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
