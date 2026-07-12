@@ -26,9 +26,15 @@ class _FakeClient:
         self._agent_playbook_resp = agent_playbook_resp
         self._profile_resp = profile_resp
         self.published_kwargs: dict[str, Any] = {}
+        self.raw_request: dict[str, Any] = {}
 
     def publish_interaction(self, **kwargs):
         self.published_kwargs = kwargs
+        if not self._publish_ok:
+            raise RuntimeError("reflexio unreachable")
+
+    def _make_request(self, method, path, **kwargs):
+        self.raw_request = {"method": method, "path": path, **kwargs}
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
 
@@ -273,6 +279,107 @@ def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> No
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["force_extraction"] is True
     assert "override_learning_stall" not in client.published_kwargs
+
+
+def test_link_publish_uses_stable_raw_request() -> None:
+    client = _FakeClient()
+    adapter = _adapter_with(client)
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="request-1",
+        interactions=[
+            {
+                "role": "Assistant",
+                "content": "done",
+                "retrieved_learnings": [
+                    {"kind": "profile", "learning_id": "profile-1"}
+                ],
+            }
+        ],
+    )
+
+    assert ok is True
+    assert client.published_kwargs == {}
+    assert client.raw_request["method"] == "POST"
+    assert client.raw_request["path"] == "/api/publish_interaction"
+    assert client.raw_request["json"]["request_id"] == "request-1"
+    assert client.raw_request["json"]["interaction_data_list"][0][
+        "retrieved_learnings"
+    ] == [{"kind": "profile", "learning_id": "profile-1"}]
+
+
+def test_missing_raw_request_helper_falls_back_without_optional_links(
+    monkeypatch,
+) -> None:
+    client = _FakeClient()
+    monkeypatch.setattr(client, "_make_request", None)
+    adapter = _adapter_with(client)
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        interactions=[
+            {
+                "role": "Assistant",
+                "content": "done",
+                "retrieved_learnings": [
+                    {"kind": "profile", "learning_id": "profile-1"}
+                ],
+            }
+        ],
+    )
+
+    assert ok is True
+    assert client.published_kwargs["interactions"] == [
+        {"role": "Assistant", "content": "done"}
+    ]
+
+
+def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
+    class ResponseLossClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.raw_requests = []
+
+        def _make_request(self, method, path, **kwargs):
+            self.raw_requests.append(kwargs["json"])
+            if len(self.raw_requests) == 1:
+                raise TimeoutError("response was lost after send")
+
+        def publish_interaction(self, **kwargs):
+            raise AssertionError("fallback must preserve the stable request ID")
+
+    client = ResponseLossClient()
+    adapter = _adapter_with(client)
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="stable-request",
+        interactions=[
+            {
+                "role": "Assistant",
+                "content": "done",
+                "retrieved_learnings": [
+                    {"kind": "profile", "learning_id": "profile-1"}
+                ],
+            }
+        ],
+    )
+
+    assert ok is True
+    assert len(client.raw_requests) == 2
+    assert {request["request_id"] for request in client.raw_requests} == {
+        "stable-request"
+    }
+    assert client.raw_requests[0]["interaction_data_list"][0][
+        "retrieved_learnings"
+    ] == [{"kind": "profile", "learning_id": "profile-1"}]
+    assert client.raw_requests[1]["interaction_data_list"] == [
+        {"role": "Assistant", "content": "done"}
+    ]
 
 
 def test_publish_returns_false_when_client_raises() -> None:

@@ -139,13 +139,34 @@ def test_append_injected_roundtrip(session_dir) -> None:
     state.append_injected(
         "s1",
         [
-            {"id": "s1-ab12", "kind": "playbook", "title": "t1", "content": "c1"},
-            {"id": "p1-cd34", "kind": "profile", "title": "t2", "content": "c2"},
+            {
+                "id": "s1-ab12",
+                "kind": "playbook",
+                "source_kind": "user_playbook",
+                "real_id": "11",
+                "title": "t1",
+                "content": "c1",
+            },
+            {
+                "id": "p1-cd34",
+                "kind": "profile",
+                "real_id": "p1",
+                "title": "t2",
+                "content": "c2",
+            },
         ],
     )
     registry = state.read_injected("s1")
     assert registry["s1-ab12"]["title"] == "t1"
     assert registry["p1-cd34"]["kind"] == "profile"
+    assert state.read_all("s1") == [
+        {
+            "retrieved_learning_refs": [
+                {"kind": "user_playbook", "learning_id": "11"},
+                {"kind": "profile", "learning_id": "p1"},
+            ]
+        }
+    ]
 
 
 def test_append_injected_empty_iter_is_noop(session_dir) -> None:
